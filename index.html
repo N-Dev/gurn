@@ -25,7 +25,7 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
 #app{position:fixed;inset:0;overflow:hidden}
 #stage{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 20%,#2a1d40,var(--ink))}
 #stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
-#dbg{pointer-events:none}
+#dbgCanvas{pointer-events:none}
 
 .top{z-index:5;position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;
   padding:calc(10px + env(safe-area-inset-top,0px)) 16px 26px;
@@ -85,7 +85,7 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
 </head>
 <body>
 <div id="app">
-  <div id="stage"><canvas id="out" aria-label="Camera with filters"></canvas><canvas id="dbg" hidden></canvas></div>
+  <div id="stage"><canvas id="outCanvas" aria-label="Camera with filters"></canvas><canvas id="dbgCanvas" hidden></canvas></div>
 
   <div class="top">
     <div class="mark">Gu<i>r</i>n</div>
@@ -145,6 +145,7 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
 
 <script>
 'use strict';
+(() => { /* own scope: the face tracker's loader uses global names such as dbg and out */
 /* ================= Config ================= */
 const MP_VER = '0.10.14';
 const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VER;
@@ -153,7 +154,7 @@ const SEG_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segment
 const MAX_FACES = 4;
 
 const $ = id => document.getElementById(id);
-const out = $('out'), octx = out.getContext('2d'), dbg = $('dbg'), dctx = dbg.getContext('2d'), cam = $('cam');
+const out = $('outCanvas'), octx = out.getContext('2d'), dbg = $('dbgCanvas'), dctx = dbg.getContext('2d'), cam = $('cam');
 const glc = document.createElement('canvas');
 const gl = glc.getContext('webgl2', {alpha:false, depth:true, antialias:true, premultipliedAlpha:false});
 
@@ -725,7 +726,7 @@ function drawMenu(){
 }
 
 /* ================= Debug mode ================= */
-function setDebug(on){ D.on = on; $('panel').hidden = !on; $('dbg').hidden = !on; $('debugBtn').setAttribute('aria-pressed', on); store.set('debug', on); if (!on) dctx.clearRect(0, 0, dbg.width, dbg.height); }
+function setDebug(on){ D.on = on; $('panel').hidden = !on; $('dbgCanvas').hidden = !on; $('debugBtn').setAttribute('aria-pressed', on); store.set('debug', on); if (!on) dctx.clearRect(0, 0, dbg.width, dbg.height); }
 $('debugBtn').onclick = () => setDebug(!D.on);
 for (const [id, key] of [['dLm', 'lm'], ['dAx', 'ax'], ['dOcc', 'occ'], ['dMask', 'mask'], ['dInv', 'inv']]) $(id).onchange = e => { D[key] = e.target.checked; };
 $('dTest').onchange = e => { D.test = e.target.checked; mask.has = false; parts.length = 0; if (D.test){ $('start').hidden = true; $('tray').hidden = false; log('test face on'); } else if (src.kind === 'none'){ $('start').hidden = false; $('tray').hidden = true; } };
@@ -741,6 +742,7 @@ setDebug(location.hash === '#debug' || store.get('debug', false));
 if (!window.isSecureContext) $('startNote').textContent = 'The camera needs https or localhost. On this address only photo mode will work.';
 loadTracker();
 requestAnimationFrame(frame);
+})();
 </script>
 </body>
 </html>
