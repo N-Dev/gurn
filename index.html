@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <title>Gurn Face Filters</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#120e1a">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=Figtree:wght@400;600;800&display=swap">
 <style>
@@ -81,6 +85,13 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
 .chip img{width:26px;height:26px;border-radius:50%;object-fit:cover;vertical-align:middle;margin:-6px 8px -4px -8px}
 #pick{z-index:8}
 #pickC{max-width:100%;max-height:58vh;border-radius:14px;cursor:pointer}
+.chip input[type=color]{width:24px;height:24px;border:0;padding:0;background:none;vertical-align:middle;margin:-5px -6px -3px 8px}
+#count{position:absolute;inset:0;display:grid;place-items:center;font:400 34vmin/1 var(--display);color:var(--fg);text-shadow:0 4px 30px rgba(0,0,0,.6);pointer-events:none;z-index:4}
+#editC{max-width:100%;max-height:58%;border-radius:18px;min-height:0;touch-action:none}
+.tools{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;align-items:center;width:100%}
+.tools input[type=text]{flex:1;min-width:140px;max-width:320px;font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:99px;padding:10px 16px;user-select:text;-webkit-user-select:text}
+.tools input[type=color]{width:40px;height:40px;border:0;background:none;padding:0}
+.ghost[aria-pressed="true"]{background:var(--mint);color:#06231d;border-color:transparent}
 #toast{z-index:9;position:absolute;left:50%;top:calc(64px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--fg);color:var(--ink);
   font-weight:600;padding:9px 16px;border-radius:99px;max-width:calc(100% - 32px);text-align:center}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -134,7 +145,8 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
   </div>
 
   <div id="sheet" hidden>
-    <img id="shotImg" alt="Your photo" hidden><video id="shotVid" controls playsinline loop hidden></video>
+    <canvas id="editC" hidden></canvas><video id="shotVid" controls playsinline loop hidden></video>
+    <div class="tools" id="editTools" hidden><input type="text" id="capText" placeholder="Add a caption" maxlength="80" autocomplete="off"><button class="ghost" id="drawBtn" aria-pressed="false">Draw</button><input type="color" id="drawCol" value="#ff4f9a" aria-label="Pen colour"><button class="ghost" id="undoBtn">Undo</button></div>
     <div class="btns">
       <button class="big" id="save">Save</button>
       <button class="ghost" id="share" hidden>Share</button>
@@ -145,6 +157,9 @@ button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-of
   <div class="cover" id="pick" hidden><div class="box"><p>More than one face found. Tap the one to use.</p><canvas id="pickC"></canvas><button class="ghost" id="pickCancel">Cancel</button></div></div>
   <input type="file" id="bgIn" accept="image/*" hidden>
   <input type="file" id="faceIn" accept="image/*" hidden>
+  <input type="file" id="stickIn" accept="image/*" hidden>
+  <input type="file" id="importIn" accept=".json,application/json" hidden>
+  <div id="count" hidden></div>
   <video id="cam" playsinline muted hidden></video>
 </div>
 
@@ -161,7 +176,7 @@ const MAX_FACES = 4;
 const $ = id => document.getElementById(id);
 const out = $('outCanvas'), octx = out.getContext('2d'), dbg = $('dbgCanvas'), dctx = dbg.getContext('2d'), cam = $('cam');
 const glc = document.createElement('canvas');
-const gl = glc.getContext('webgl2', {alpha:false, depth:true, antialias:true, premultipliedAlpha:false});
+const gl = glc.getContext('webgl2', {alpha:true, depth:true, antialias:true, premultipliedAlpha:true});
 
 /* ================= Small helpers ================= */
 const logs = [];
@@ -188,7 +203,10 @@ const M = {
 };
 
 /* ================= State ================= */
-const sel = Object.assign({face:'none', myEyes:false, mix:1, sticker:'none', warp:'none', mask3d:'none', colour:'none', bg:'none', triggers:[]}, store.get('sel', {}));
+const sel = Object.assign({face:'none', myEyes:false, mix:1, tone:true, faceMap:{}, sticker:'none', custom:[], makeup:[], lipCol:'#c2185b', shadowCol:'#7b5cff', blushCol:'#ff5a8c', paint:'none', hair:'none', hairCol:'#ff4f9a',
+  warp:'none', mask3d:'none', colour:'none', bg:'none', fx:'none', triggers:[], game:'none', timer:0, tapRec:false}, store.get('sel', {}));
+for (const k of ['custom', 'makeup', 'triggers']) if (!Array.isArray(sel[k])) sel[k] = [];
+if (!sel.faceMap || typeof sel.faceMap !== 'object') sel.faceMap = {};
 const D = { on:false, lm:true, ax:true, occ:false, mask:false, inv:false, test:false, sens:.5 };
 const src = { el:null, w:0, h:0, mirror:false, kind:'none', ready:false };
 let facing = 'user', stream = null;
@@ -206,26 +224,14 @@ async function loadTracker(){
     try { faceLm = await mk('GPU'); perf.delegate = 'GPU'; }
     catch (e) { log('GPU face tracker failed, using CPU: ' + e.message); faceLm = await mk('CPU'); perf.delegate = 'CPU'; }
     setStatus('Face tracker ready'); log('face tracker ready (' + perf.delegate + ')');
-    readTessellation(); if (sel.face !== 'none') loadSkin();
-    if (sel.bg !== 'none') loadSegmenter();
+    readTessellation(); if (sel.face !== 'none' && sel.face !== 'swap') ensureSkin(sel.face);
+    if (segActive()) loadSegmenter();
   } catch (e) {
     setStatus('Face tracker could not load', true);
     log('tracker load failed: ' + (e && e.message || e));
     toast('Face tracker could not load. Check your connection and reload.');
   }
 }
-async function loadSegmenter(){
-  if (segmenter || segLoading || !vision) return;
-  segLoading = true; setStatus('Loading backdrop model…');
-  try {
-    const mk = d => vision.ImageSegmenter.createFromOptions(mpFiles, { baseOptions:{modelAssetPath:SEG_MODEL, delegate:d}, runningMode:'VIDEO', outputCategoryMask:false, outputConfidenceMasks:true });
-    try { segmenter = await mk('GPU'); perf.segDelegate = 'GPU'; }
-    catch (e) { log('GPU backdrop model failed, using CPU: ' + e.message); segmenter = await mk('CPU'); perf.segDelegate = 'CPU'; }
-    setStatus('Face tracker ready'); log('backdrop model ready (' + perf.segDelegate + ')');
-  } catch (e) { setStatus('Backdrop model could not load', true); log('segmenter load failed: ' + (e && e.message || e)); }
-  segLoading = false;
-}
-
 /* Build a face frame in screen space: x right (px), y down (px), z toward the viewer (px). */
 function buildFace(lm, bsCats, W, H, mirror){
   const P = i => { const p = lm[i]; return [(mirror ? 1 - p.x : p.x) * W, p.y * H, -p.z * W]; };
@@ -271,6 +277,12 @@ function fakeLm(cx, cy, size, yaw, pitch, roll, open){
   const lm = new Array(478), c = proj([0, 0, .3]);
   for (let i = 0; i < 478; i++) lm[i] = c;
   for (const k in HEAD){ const p = HEAD[k].slice(); if (k === '14' || k === '17') p[1] -= open * .16; if (k === '152') p[1] -= open * .1; lm[k] = proj(p); }
+  const ring = (ids, cx, cy, cz, rx, ry, a0, a1) => ids.forEach((id, k) => { if (HEAD[id]) return; const a = a0 + (a1 - a0) * k / (ids.length - 1); lm[id] = proj([cx + Math.cos(a) * rx, cy + Math.sin(a) * ry, cz]); });
+  const my = -.3 - open * .08, PI = Math.PI;
+  ring(LIPS_OUT.slice(0, 11), 0, my, .43, .17, .05 + open * .1, PI, 2 * PI); ring(LIPS_OUT.slice(11), 0, my, .43, .17, .05, .1 * PI, .9 * PI);
+  ring(LIPS_INNER.slice(0, 11), 0, my, .42, .12, .015 + open * .08, PI, 2 * PI); ring(LIPS_INNER.slice(11), 0, my, .42, .12, .015, .1 * PI, .9 * PI);
+  ring(LID_A, -.21, .1, .33, .1, .04, PI, 0); ring(LID_B, .21, .1, .33, .1, .04, 0, PI);
+  OVAL.forEach((id, k) => { if (HEAD[id]) return; const a = PI / 2 - k / 36 * 2 * PI; lm[id] = proj([Math.cos(a) * .5, -.03 + Math.sin(a) * .6, .12]); });
   return lm;
 }
 function testFaces(){
@@ -280,9 +292,9 @@ function testFaces(){
   c.fillStyle = '#e9b44c'; c.beginPath(); c.arc(820, 110, 60, 0, 7); c.fill();
   c.fillStyle = '#6fbf73'; c.fillRect(0, H - 90, W, 90);
   const cyc = (t * .25) % 4, bsFor = k => ({ jawOpen: k === 0 ? clamp(Math.sin(t * 1.4) * .9, 0, 1) : .05, browInnerUp: cyc > 1 && cyc < 1.6 ? .9 : .05,
-    eyeBlinkLeft: cyc > 2 && cyc < 2.5 ? .9 : .05, eyeBlinkRight:.05, mouthPucker: cyc > 3 && cyc < 3.7 ? .9 : .05 });
+    eyeBlinkLeft: cyc > 2 && cyc < 2.5 ? .9 : .05, eyeBlinkRight:.05, tongueOut: k === 1 ? .8 : 0, mouthSmileLeft: cyc < 1 ? .8 : 0, mouthSmileRight: cyc < 1 ? .8 : 0, mouthPucker: cyc > 3 && cyc < 3.7 ? .9 : .05 });
   const defs = [ [W * .4, H * .5, 250, Math.sin(t * .7) * .55, Math.sin(t * .5) * .15, Math.sin(t * .9) * .2], [W * .8, H * .62, 130, Math.sin(t * .6 + 2) * .4, 0, -.15] ];
-  mctx.fillStyle = '#000'; mctx.fillRect(0, 0, 256, 256); mctx.fillStyle = '#fff';
+  mctx.fillStyle = '#000'; mctx.fillRect(0, 0, 256, 256);
   const res = [];
   defs.forEach((d, k) => {
     const bs = bsFor(k), lm = fakeLm(d[0], d[1], d[2], d[3], d[4], d[5], bs.jawOpen);
@@ -293,29 +305,45 @@ function testFaces(){
     c.fillStyle = '#2b2140'; for (const i of [468, 473]){ const p = px(i); c.beginPath(); c.ellipse(p[0], p[1], s * .06, s * .045 * (i === 468 ? 1 - bs.eyeBlinkLeft * .9 : 1), 0, 0, 7); c.fill(); }
     c.fillStyle = '#a995cf'; { const p = px(1); c.beginPath(); c.arc(p[0], p[1], s * .06, 0, 7); c.fill(); }
     { const a = px(13), b = px(14), l = px(61), r = px(291); c.fillStyle = '#7a2948'; c.beginPath(); c.ellipse((a[0]+b[0])/2, (a[1]+b[1])/2, Math.hypot(r[0]-l[0], r[1]-l[1]) / 2 * (1 - bs.mouthPucker * .5), Math.max(s * .02, Math.hypot(b[0]-a[0], b[1]-a[1]) / 2), -d[5], 0, 7); c.fill(); }
-    mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] - s * .05) / H * 256, s * .52 / W * 256, s * .7 / H * 256, 0, 0, 7); mctx.fill();
+    mctx.fillStyle = '#f00'; mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] - s * .05) / H * 256, s * .52 / W * 256, s * .7 / H * 256, 0, 0, 7); mctx.fill();
     mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] + s * 1.25) / H * 256, s * .8 / W * 256, s * .6 / H * 256, 0, 0, 7); mctx.fill();
+    mctx.fillStyle = '#ff0'; mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] - s * .52) / H * 256, s * .46 / W * 256, s * .26 / H * 256, 0, 0, 7); mctx.fill();
     res.push(buildFace(lm, Object.keys(bs).map(n => ({categoryName:n, score:bs[n]})), W, H, false));
   });
-  if (bgActive()){ const d = mctx.getImageData(0, 0, 256, 256).data; if (!mask.data || mask.data.length !== 65536) mask.data = new Uint8Array(65536); for (let i = 0; i < 65536; i++) mask.data[i] = d[i * 4]; mask.w = mask.h = 256; mask.fresh = true; mask.has = true; }
+  if (segActive()){ const d = mctx.getImageData(0, 0, 256, 256).data; if (!mask.data || mask.data.length !== 131072) mask.data = new Uint8Array(131072); for (let i = 0; i < 65536; i++){ mask.data[i * 2] = d[i * 4]; mask.data[i * 2 + 1] = d[i * 4 + 1]; } mask.w = mask.h = 256; mask.fresh = true; mask.has = true; } else mask.has = false;
   return res;
 }
 
-/* ================= Person mask (backdrops) ================= */
+/* ================= Person and hair masks (backdrops, hair colour) ================= */
 const mask = { data:null, w:0, h:0, fresh:false, has:false };
-const bgActive = () => sel.bg !== 'none' || D.mask;
+const SEG_MULTI = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+const segActive = () => sel.bg !== 'none' || sel.hair !== 'none' || D.mask;
+const wantSeg = () => sel.hair !== 'none' ? 'multi' : 'selfie';
+let segKind = null;
+async function loadSegmenter(){
+  const kind = wantSeg(); if (segLoading || !vision || (segmenter && segKind === kind)) return;
+  segLoading = true; setStatus(kind === 'multi' ? 'Loading hair model…' : 'Loading backdrop model…');
+  const old = segmenter; segmenter = null; mask.has = false; try { old && old.close(); } catch (e) {}
+  try {
+    const mk = d => vision.ImageSegmenter.createFromOptions(mpFiles, { baseOptions:{modelAssetPath:kind === 'multi' ? SEG_MULTI : SEG_MODEL, delegate:d}, runningMode:'VIDEO', outputCategoryMask:false, outputConfidenceMasks:true });
+    try { segmenter = await mk('GPU'); perf.segDelegate = 'GPU'; }
+    catch (e) { log('GPU mask model failed, using CPU: ' + e.message); segmenter = await mk('CPU'); perf.segDelegate = 'CPU'; }
+    segKind = kind; setStatus('Face tracker ready'); log(kind + ' mask model ready (' + perf.segDelegate + ')');
+  } catch (e) { setStatus('Mask model could not load', true); log('mask model load failed: ' + (e && e.message || e)); }
+  segLoading = false;
+}
 function segment(now){
   if (D.test) return;
-  if (!bgActive()){ mask.has = false; return; }
-  if (!segmenter){ loadSegmenter(); return; }
+  if (!segActive()){ mask.has = false; return; }
+  if (!segmenter || segKind !== wantSeg()){ loadSegmenter(); if (!segmenter) return; }
   const t0 = performance.now();
   try {
     segmenter.segmentForVideo(src.el, Math.max(now, lastTs), r => {
       const ms = r.confidenceMasks; if (!ms || !ms.length) return;
-      const m = ms[ms.length - 1], f = m.getAsFloat32Array(), n = f.length;
-      if (!mask.data || mask.data.length !== n) mask.data = new Uint8Array(n);
-      for (let i = 0; i < n; i++) mask.data[i] = f[i] * 255;
-      mask.w = m.width; mask.h = m.height; mask.fresh = true; mask.has = true; perf.masks = ms.length;
+      const multi = segKind === 'multi' && ms.length >= 2, a = (multi ? ms[0] : ms[ms.length - 1]).getAsFloat32Array(), h = multi ? ms[1].getAsFloat32Array() : null, n = a.length;
+      if (!mask.data || mask.data.length !== n * 2) mask.data = new Uint8Array(n * 2);
+      for (let i = 0; i < n; i++){ mask.data[i * 2] = (multi ? 1 - a[i] : a[i]) * 255; mask.data[i * 2 + 1] = h ? h[i] * 255 : 0; }
+      mask.w = ms[0].width; mask.h = ms[0].height; mask.fresh = true; mask.has = true; perf.masks = ms.length;
     });
   } catch (e) { if (!segment.err) { segment.err = 1; log('segment error: ' + e.message); } }
   perf.segMs += (performance.now() - t0 - perf.segMs) * .1;
@@ -337,7 +365,7 @@ uniform sampler2D tV, tM, tB;
 uniform vec3 uRes; uniform float uMirror, uTime;
 uniform int uNW; uniform vec4 uW[16];
 uniform int uNF; uniform vec4 uF[4]; uniform vec3 uE[12];
-uniform float uSmooth, uHasMask, uInv, uBgAsp, uShowMask;
+uniform float uSmooth, uHasMask, uInv, uBgAsp, uShowMask, uHairAmt; uniform vec3 uHair;
 uniform int uBg, uFx;
 uniform float uBright, uContrast, uSat, uFade, uVig, uGrain; uniform vec3 uTint;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
@@ -368,6 +396,7 @@ void main(){
       float keep = smoothstep(.04,.14,length(c-b)); c = mix(c, b, uSmooth*m*(1.-keep)); }
   }
   float pm = 1.;
+  if (uHairAmt > 0.){ float hm = smoothstep(.3,.7,texture(tM, suv(p)).g); float hl = dot(c, vec3(.299,.587,.114)); c = mix(c, uHair*(hl*1.5+.1) + pow(hl,3.)*.35, hm*uHairAmt); }
   if (uHasMask > .5){ pm = texture(tM, suv(p)).r; pm = mix(pm, 1.-pm, uInv); pm = smoothstep(.3,.62,pm); if (uBg > 0) c = mix(backdrop(vUv, p), c, pm); }
   c *= uBright; c = (c-.5)*uContrast+.5; float l = dot(c, vec3(.299,.587,.114)); c = mix(vec3(l), c, uSat); c *= uTint; c = mix(c, c*.82+.13, uFade);
   if (uFx == 1){ float t = clamp(l,0.,1.); c = t<.33 ? mix(vec3(.05,.0,.3), vec3(.75,.0,.55), t/.33) : t<.66 ? mix(vec3(.75,.0,.55), vec3(1.,.55,.0), (t-.33)/.33) : mix(vec3(1.,.55,.0), vec3(1.,1.,.75), (t-.66)/.34); }
@@ -415,6 +444,7 @@ function geo(key, build){
 function grid(nu, nv, fn){ const p = [], n = [], i = []; for (let v = 0; v <= nv; v++) for (let u = 0; u <= nu; u++){ const r = fn(u / nu, v / nv); p.push(...r[0]); n.push(...r[1]); }
   for (let v = 0; v < nv; v++) for (let u = 0; u < nu; u++){ const a = v * (nu + 1) + u, b = a + nu + 1; i.push(a, b, a + 1, a + 1, b, b + 1); } return { p, n, i }; }
 const G = {
+  dome: () => geo('dome', () => grid(28, 9, (u, v) => { const a = u * 6.28318, b = v * 1.5708, q = [Math.sin(b) * Math.cos(a), Math.cos(b), Math.sin(b) * Math.sin(a)]; return [q, q]; })),
   sphere: () => geo('sph', () => grid(28, 18, (u, v) => { const a = u * 6.28318, b = v * 3.14159, q = [Math.sin(b) * Math.cos(a), Math.cos(b), Math.sin(b) * Math.sin(a)]; return [q, q]; })),
   torus: (R, r) => geo('tor' + R + '_' + r, () => grid(56, 12, (u, v) => { const a = u * 6.28318, b = v * 6.28318, cb = Math.cos(b), sb = Math.sin(b); return [[(R + r * cb) * Math.cos(a), r * sb, (R + r * cb) * Math.sin(a)], [cb * Math.cos(a), sb, cb * Math.sin(a)]]; })),
   /* cylinder / cone along Y, height 1, radius rt at top and rb at bottom, with caps */
@@ -449,6 +479,20 @@ const MASKS3D = {
   horns: f => { const top = f.L(10), ps = []; for (const sx of [-1, 1]){ const b = M.chain(M.T(sx * .27, top[1] + .02, .12), M.RZ(sx * -.5), M.RX(-.15));
       ps.push(part(G.cyl(.055, .1), M.chain(b, M.T(0, .1, 0), M.S(1, .2, 1)), hex(0xd4233f), {shine:1.4}));
       ps.push(part(G.cyl(0, .055), M.chain(b, M.T(sx * -.035, .29, 0), M.RZ(sx * .35), M.S(1, .2, 1)), hex(0xf04a5c), {shine:1.4})); } return ps; },
+  viking: f => { const top = f.L(10), y = top[1] - .02, gold = hex(0xc9a24a), ivory = hex(0xefe6d2), ps = [
+      part(G.dome(), M.chain(M.T(0, y, -.12), M.S(.54, .5, .57)), hex(0x9aa3b2), {shine:1.6}), part(G.torus(.54, .035), M.chain(M.T(0, y, -.12), M.S(1, 1, 1.055)), gold, {shine:1.2}),
+      part(G.box(), M.chain(M.T(0, y - .17, f.L(168)[2] + .1), M.S(.06, .34, .03)), gold, {shine:1.2})];
+    for (const sx of [-1, 1]){ const b = M.chain(M.T(sx * .52, y + .12, -.12), M.RZ(sx * -1.0)); ps.push(part(G.cyl(.06, .1), M.chain(b, M.T(0, .12, 0), M.S(1, .24, 1)), ivory, {shine:.8}), part(G.cyl(0, .06), M.chain(b, M.T(sx * .045, .33, 0), M.RZ(sx * .4), M.S(1, .22, 1)), ivory, {shine:.8})); }
+    return ps; },
+  antlers: f => { const top = f.L(10), col = hex(0x8a5a33), ps = [];
+    for (const sx of [-1, 1]){ const b = M.chain(M.T(sx * .2, top[1] + .08, -.02), M.RZ(sx * -.45), M.RX(-.1)); ps.push(part(G.cyl(.022, .045), M.chain(b, M.T(0, .3, 0), M.S(1, .6, 1)), col, {shine:.3}));
+      for (const [yy, ang, l] of [[.2, .7, .26], [.36, .6, .22], [.52, .45, .16]]) ps.push(part(G.cyl(.006, .024), M.chain(b, M.T(0, yy, 0), M.RZ(sx * ang), M.RX(.45), M.T(0, l / 2, 0), M.S(1, l, 1)), col, {shine:.3})); }
+    return ps; },
+  wizard: (f, t) => { const top = f.L(10), col = hex(0x3b2a8c), base = M.chain(M.T(0, top[1] + .1, -.1), M.RX(-.12)), ps = [
+      part(G.cyl(.62, .62), M.chain(base, M.S(1, .025, 1)), col, {shine:.5}), part(G.cyl(.2, .36), M.chain(base, M.T(0, .22, 0), M.S(1, .44, 1)), col, {shine:.5}),
+      part(G.cyl(0, .2), M.chain(base, M.T(0, .44, 0), M.RZ(.3), M.T(0, .21, 0), M.S(1, .42, 1)), col, {shine:.5}), part(G.torus(.365, .035), M.chain(base, M.T(0, .04, 0)), hex(0xffd75e), {emis:.2, shine:1})];
+    for (let k = 0; k < 5; k++){ const a = Math.PI * (.2 + k * .15), yy = .12 + (k * 7 % 5) * .06, r = .37 - .36 * yy, z = .02 + Math.sin(t * 3 + k) * .006; ps.push(part(G.sphere(), M.chain(base, M.T(Math.cos(a) * r, yy, Math.sin(a) * r), M.S(.022 + z, .022 + z, .022 + z)), hex(0xffe9a8), {emis:.9})); }
+    return ps; },
   helmet: f => [part(G.torus(.62, .09), M.chain(M.T(0, -.78, -.12), M.RX(.12)), hex(0xe8ecf5), {shine:1}),
     part(G.sphere(), M.chain(M.T(0, .1, -.1), M.S(1, 1.02, 1)), hex(0xa9d8ff, .13), {shine:2.2, glass:1})]
 };
@@ -472,14 +516,16 @@ const COLOURS = {
 };
 const BGS = { none:0, blur:1, spot:2, sunset:3, stars:4, photo:5 };
 
-function renderGL(){
+const HAIRS = { pink:'#ff4f9a', blue:'#3d8bff', purple:'#8a5cff', green:'#35c46a', red:'#e0312f', silver:'#cfd6e4' };
+const hx = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
+function renderBase(){
   const W = src.w, H = src.h, Dp = Math.max(W, H) * 4;
   if (glc.width !== W || glc.height !== H){ glc.width = W; glc.height = H; }
   gl.viewport(0, 0, W, H);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texV);
-  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src.el); } catch (e) { if (!renderGL.err){ renderGL.err = 1; log('frame upload failed: ' + e.message); } }
+  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src.el); } catch (e) { if (!renderBase.err){ renderBase.err = 1; log('frame upload failed: ' + e.message); } }
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texM);
-  if (mask.fresh){ gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, mask.w, mask.h, 0, gl.RED, gl.UNSIGNED_BYTE, mask.data); mask.fresh = false; }
+  if (mask.fresh){ gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, mask.w, mask.h, 0, gl.RG, gl.UNSIGNED_BYTE, mask.data); mask.fresh = false; }
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB);
 
   const b = bgP, u = b.u; gl.useProgram(b.p);
@@ -499,52 +545,54 @@ function renderGL(){
   gl.uniform3fv(u('uTint'), c.tint || [1, 1, 1]); gl.uniform1i(u('uFx'), c.fx || 0);
   let bg = BGS[sel.bg] || 0; if (bg === 5 && !hasBg) bg = 0;
   gl.uniform1i(u('uBg'), bg); gl.uniform1f(u('uHasMask'), mask.has ? 1 : 0); gl.uniform1f(u('uInv'), D.inv ? 1 : 0); gl.uniform1f(u('uBgAsp'), bgAsp); gl.uniform1f(u('uShowMask'), D.on && D.mask ? 1 : 0);
+  const hair = sel.hair === 'none' ? null : hx(sel.hair === 'custom' ? sel.hairCol : HAIRS[sel.hair] || '#ff4f9a');
+  gl.uniform1f(u('uHairAmt'), hair && mask.has ? .85 : 0); gl.uniform3fv(u('uHair'), hair || [1, 1, 1]);
   gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.depthMask(true); gl.colorMask(true, true, true, true);
   gl.bindVertexArray(quad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-  if (sel.face !== 'none' && skin.ready && faces.length) drawSkin(W, H, Dp);
+  if (sel.face !== 'none' && faces.length) drawSkins(W, H, Dp);
+}
+/* 3D parts go on a clear canvas so face paint and makeup can sit underneath them. */
+function render3D(){
   const build = MASKS3D[sel.mask3d], showOcc = D.on && D.occ;
-  if (!build && !showOcc) return;
-  const m = meshP, mu = m.u; gl.useProgram(m.p); gl.uniform3f(mu('uRes'), W, H, Dp);
-  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+  if ((!build && !showOcc) || !faces.length) return false;
+  const W = src.w, H = src.h, Dp = Math.max(W, H) * 4, m = meshP, mu = m.u;
+  gl.useProgram(m.p); gl.uniform3f(mu('uRes'), W, H, Dp);
+  gl.disable(gl.BLEND); gl.depthMask(true); gl.colorMask(true, true, true, true); gl.clearColor(0, 0, 0, 0); gl.clearDepth(1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
   const draw = pt => { gl.uniformMatrix4fv(mu('uM'), false, pt.m); gl.uniform4fv(mu('uC'), pt.c); gl.uniform1f(mu('uEmis'), pt.emis); gl.uniform1f(mu('uShine'), pt.shine); gl.uniform1f(mu('uGlass'), pt.glass);
     gl.bindVertexArray(pt.g.vao); gl.drawElements(gl.TRIANGLES, pt.g.count, gl.UNSIGNED_SHORT, 0); };
   const setFace = f => { gl.uniform3fv(mu('uO'), f.O); gl.uniform3fv(mu('uX'), f.X); gl.uniform3fv(mu('uY'), f.Y); gl.uniform3fv(mu('uZ'), f.Z); gl.uniform1f(mu('uS'), f.s); };
   const occ = OCCLUDER(), glass = [];
   gl.colorMask(false, false, false, false); for (const f of faces){ setFace(f); draw(occ); } gl.colorMask(true, true, true, true);
   if (build) for (const f of faces){ setFace(f); for (const pt of build(f, time)) if (pt.c[3] < 1) glass.push([f, pt]); else draw(pt); }
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
   for (const [f, pt] of glass){ setFace(f); draw(pt); }
   if (showOcc){ gl.disable(gl.DEPTH_TEST); for (const f of faces){ setFace(f); draw(occ); } }
-  gl.depthMask(true); gl.disable(gl.BLEND);
+  gl.depthMask(true); gl.disable(gl.BLEND); gl.bindVertexArray(null);
+  return true;
 }
 
-
-/* ================= Face swap: a face cut from a photo, stretched over the live face ================= */
+/* ================= Face swap: a face cut from a photo (or from someone else in shot), stretched over the live face ================= */
 const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
-const LIPS_IN = new Set([78,95,88,178,87,14,317,402,318,324,308,191,80,81,82,13,312,311,310,415]);
+const LIPS_OUT = [61,146,91,181,84,17,314,405,321,375,291,409,270,269,267,0,37,39,40,185];
+const LIPS_INNER = [78,95,88,178,87,14,317,402,318,324,308,415,310,311,312,13,82,81,80,191];
+const LID_A = [33,246,161,160,159,158,157,173,133], LID_B = [263,466,388,387,386,385,384,398,362];
+const LIPS_IN = new Set(LIPS_INNER);
 const EYES = [new Set([33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246]), new Set([263,249,390,373,374,380,381,382,362,398,384,385,386,387,388,466])];
 const SKIN_VS = `#version 300 es
 in vec3 aP; in vec2 aUv; in float aA; uniform vec3 uRes; out vec2 vUv; out float vA;
 void main(){ vUv = aUv; vA = aA; gl_Position = vec4(2.*aP.x/uRes.x-1., 1.-2.*aP.y/uRes.y, -aP.z/uRes.z, 1.); }`;
 const SKIN_FS = `#version 300 es
-precision highp float; in vec2 vUv; in float vA; out vec4 o; uniform sampler2D tF; uniform float uMix;
-void main(){ o = vec4(texture(tF, vUv).rgb, vA*uMix); }`;
-let skins = store.get('faces', []), meshTris = null, skinP, skinVao, skinPosB, skinUvB, skinAB, skinIdxB, texF;
-const skin = { ready:false, id:null, nAll:0, nEyes:0, pos:new Float32Array(468 * 3), how:'-' };
-function initSkinGL(){
-  skinP = prog(SKIN_VS, SKIN_FS); skinVao = gl.createVertexArray(); gl.bindVertexArray(skinVao);
-  const mk = (name, size, data, usage) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, usage); const l = gl.getAttribLocation(skinP.p, name); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, size, gl.FLOAT, false, 0, 0); return b; };
-  skinPosB = mk('aP', 3, skin.pos, gl.DYNAMIC_DRAW); skinUvB = mk('aUv', 2, new Float32Array(468 * 2), gl.STATIC_DRAW); skinAB = mk('aA', 1, new Float32Array(468), gl.STATIC_DRAW);
-  skinIdxB = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, skinIdxB); gl.bindVertexArray(null);
-  texF = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, texF);
-  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
-}
+precision highp float; in vec2 vUv; in float vA; out vec4 o; uniform sampler2D tF; uniform float uMix; uniform vec3 uGain;
+void main(){ o = vec4(clamp(texture(tF, vUv).rgb*uGain, 0., 1.), vA*uMix); }`;
+let skins = store.get('faces', []), meshTris = null, skinP, skinPosB, liveGeo = null;
+const skinCache = {}, skinPos = new Float32Array(468 * 3), liveUv = new Float32Array(468 * 2), skinInfo = { how:'-' };
+function initSkinGL(){ skinP = prog(SKIN_VS, SKIN_FS); skinPosB = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, skinPosB); gl.bufferData(gl.ARRAY_BUFFER, skinPos, gl.DYNAMIC_DRAW); }
 /* The tracker lists the face mesh as edges, three per triangle. Check that before trusting it. */
 function readTessellation(){
   try { const T = vision.FaceLandmarker.FACE_LANDMARKS_TESSELATION, t = []; let ok = T && T.length > 2000 && T.length % 3 === 0;
     for (let i = 0; ok && i < T.length; i += 3){ const a = T[i], b = T[i + 1], c = T[i + 2]; if (a.end !== b.start || b.end !== c.start || c.end !== a.start) ok = false; t.push(a.start, b.start, c.start); }
-    if (ok){ meshTris = t; log('face mesh: ' + t.length / 3 + ' triangles from the tracker'); } else log('face mesh list not in triangle order, will triangulate each photo instead');
+    if (ok){ meshTris = t; log('face mesh: ' + t.length / 3 + ' triangles from the tracker'); } else log('face mesh list not in triangle order, will triangulate each face instead');
   } catch (e) { log('face mesh list unavailable: ' + e.message); }
 }
 function delaunay(pts, ids){
@@ -557,35 +605,61 @@ function delaunay(pts, ids){
     for (const e of edges.values()) if (e) keep.push(mk(e[0], e[1], i)); tris = keep; }
   return tris.filter(t => t.v.every(v => v >= 0)).flatMap(t => t.v);
 }
-function setSkinGeometry(uv){
-  let tris = meshTris; skin.how = 'tracker mesh';
-  if (!tris){ const pts = [], ids = [], seen = new Set(); for (let i = 0; i < 468; i++){ pts.push([uv[i * 2], uv[i * 2 + 1]]); const k = uv[i * 2].toFixed(4) + '_' + uv[i * 2 + 1].toFixed(4); if (!seen.has(k)){ seen.add(k); ids.push(i); } } tris = delaunay(pts, ids); skin.how = 'triangulated from photo'; }
+/* Mesh buffers for one face layout: where each point sits in the picture, edge fade, and triangles with and without eye holes. */
+function buildSkinGeo(uv, dynamicUv){
+  let tris = meshTris, how = 'tracker mesh';
+  if (!tris){ const pts = [], ids = [], seen = new Set(); for (let i = 0; i < 468; i++){ pts.push([uv[i * 2], uv[i * 2 + 1]]); const k = uv[i * 2].toFixed(4) + '_' + uv[i * 2 + 1].toFixed(4); if (!seen.has(k)){ seen.add(k); ids.push(i); } } tris = delaunay(pts, ids); how = 'triangulated'; }
   const all = [], eyes = [], inSet = (S, i) => S.has(tris[i]) && S.has(tris[i + 1]) && S.has(tris[i + 2]);
   for (let i = 0; i < tris.length; i += 3){ if (inSet(LIPS_IN, i)) continue; const t = [tris[i], tris[i + 1], tris[i + 2]]; all.push(...t); if (!inSet(EYES[0], i) && !inSet(EYES[1], i)) eyes.push(...t); }
   const a = new Float32Array(468).fill(1), oval = new Set(OVAL);
   for (let i = 0; i < tris.length; i += 3){ const t = [tris[i], tris[i + 1], tris[i + 2]]; if (t.some(v => oval.has(v))) for (const v of t) a[v] = Math.min(a[v], .75); }
   for (const v of OVAL) a[v] = 0;
-  gl.bindVertexArray(skinVao);
-  gl.bindBuffer(gl.ARRAY_BUFFER, skinUvB); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uv), gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ARRAY_BUFFER, skinAB); gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW);
-  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, skinIdxB); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(all.concat(eyes)), gl.STATIC_DRAW);
-  gl.bindVertexArray(null); skin.nAll = all.length; skin.nEyes = eyes.length;
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const attr = (name, size, buf) => { gl.bindBuffer(gl.ARRAY_BUFFER, buf); const l = gl.getAttribLocation(skinP.p, name); gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, size, gl.FLOAT, false, 0, 0); };
+  attr('aP', 3, skinPosB);
+  const uvB = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, uvB); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(uv), dynamicUv ? gl.DYNAMIC_DRAW : gl.STATIC_DRAW); attr('aUv', 2, uvB);
+  const aB = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, aB); gl.bufferData(gl.ARRAY_BUFFER, a, gl.STATIC_DRAW); attr('aA', 1, aB);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(all.concat(eyes)), gl.STATIC_DRAW);
+  gl.bindVertexArray(null); skinInfo.how = how;
+  return { vao, uvB, nAll:all.length, nEyes:eyes.length, how };
 }
-function loadSkin(){
-  const s = skins.find(x => x.id === sel.face); skin.ready = false; if (!s){ sel.face = 'none'; return; }
-  const img = new Image(); img.onload = () => { if (sel.face !== s.id) return; try { gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texF); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img); setSkinGeometry(s.uv); skin.ready = true; skin.id = s.id; log('face swap ready (' + skin.how + ', ' + skin.nAll / 3 + ' triangles)'); } catch (e) { log('face swap failed: ' + e.message); } };
-  img.onerror = () => log('saved face image could not be read'); img.src = s.img;
+const tiny = document.createElement('canvas'); tiny.width = tiny.height = 8; const tinyX = tiny.getContext('2d', {willReadFrequently:true});
+function meanColour(el, x, y, w, h){ try { tinyX.drawImage(el, x, y, w, h, 0, 0, 8, 8); const d = tinyX.getImageData(0, 0, 8, 8).data; let r = 0, g = 0, b = 0; for (let i = 0; i < 256; i += 4){ r += d[i]; g += d[i + 1]; b += d[i + 2]; } return [r / 64 + 1, g / 64 + 1, b / 64 + 1]; } catch (e) { return null; } }
+function ensureSkin(id){
+  if (skinCache[id]) return skinCache[id];
+  const s = skins.find(x => x.id === id); if (!s) return null;
+  const e = skinCache[id] = { ready:false }, img = new Image();
+  img.onload = () => { try { e.tex = gl.createTexture(); gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, e.tex);
+      for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img); Object.assign(e, buildSkinGeo(s.uv, false));
+      const nx = s.uv[2] * img.width, ny = s.uv[3] * img.height, r = img.width * .13; e.mean = meanColour(img, nx - r, ny - r, r * 2, r * 2);
+      e.ready = true; log('face ready (' + e.how + ', ' + e.nAll / 3 + ' triangles)'); } catch (err) { log('face swap failed: ' + err.message); } };
+  img.onerror = () => log('saved face image could not be read'); img.src = s.img; return e;
 }
-function drawSkin(W, H, Dp){
-  gl.useProgram(skinP.p); gl.uniform3f(skinP.u('uRes'), W, H, Dp); gl.uniform1f(skinP.u('uMix'), sel.mix || 1); gl.uniform1i(skinP.u('tF'), 3);
-  gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, texF);
+const liveTone = [];
+function faceTone(f, i){ const t = liveTone[i] || (liveTone[i] = { c:null, n:0 }); if (!t.c || frameN - t.n > 10){ const p = f.lm[1], r = f.s * .13, m = meanColour(src.el, p.x * f.W - r, p.y * f.H - r, r * 2, r * 2); if (m) t.c = t.c ? t.c.map((v, k) => v + (m[k] - v) * .4) : m; t.n = frameN; } return t.c; }
+const gainOf = (to, from) => sel.tone && to && from ? to.map((v, k) => clamp(v / from[k], .55, 1.8)) : [1, 1, 1];
+function drawSkins(W, H, Dp){
+  const n = faces.length, swap = sel.face === 'swap'; if (swap && n < 2) return;
+  gl.useProgram(skinP.p); gl.uniform3f(skinP.u('uRes'), W, H, Dp); gl.uniform1f(skinP.u('uMix'), sel.mix || 1);
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
-  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.bindVertexArray(skinVao); gl.bindBuffer(gl.ARRAY_BUFFER, skinPosB);
-  for (const f of faces){ if (f.lm.length < 468) continue; for (let i = 0; i < 468; i++){ const p = f.P(i); skin.pos[i * 3] = p[0]; skin.pos[i * 3 + 1] = p[1]; skin.pos[i * 3 + 2] = p[2]; }
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, skin.pos);
-    if (sel.myEyes) gl.drawElements(gl.TRIANGLES, skin.nEyes, gl.UNSIGNED_SHORT, skin.nAll * 2); else gl.drawElements(gl.TRIANGLES, skin.nAll, gl.UNSIGNED_SHORT, 0); }
-  gl.disable(gl.BLEND); gl.bindVertexArray(null);
+  gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+  faces.forEach((f, i) => {
+    if (f.lm.length < 468) return;
+    let g, gain;
+    if (swap){ const o = faces[(i + 1) % n]; if (o.lm.length < 468) return; for (let k = 0; k < 468; k++){ liveUv[k * 2] = o.lm[k].x; liveUv[k * 2 + 1] = o.lm[k].y; }
+      if (!liveGeo) liveGeo = buildSkinGeo(liveUv, true); g = liveGeo; gl.bindBuffer(gl.ARRAY_BUFFER, g.uvB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, liveUv);
+      gl.uniform1i(skinP.u('tF'), 0); gain = gainOf(faceTone(f, i), faceTone(o, (i + 1) % n)); }
+    else { const id = i === 0 ? sel.face : (sel.faceMap[i] || sel.face); if (id === 'none') return; g = ensureSkin(id); if (!g || !g.ready) return;
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, g.tex); gl.uniform1i(skinP.u('tF'), 3); gain = gainOf(faceTone(f, i), g.mean); }
+    gl.uniform3fv(skinP.u('uGain'), gain);
+    for (let k = 0; k < 468; k++){ const p = f.P(k); skinPos[k * 3] = p[0]; skinPos[k * 3 + 1] = p[1]; skinPos[k * 3 + 2] = p[2]; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, skinPosB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, skinPos); gl.bindVertexArray(g.vao);
+    if (sel.myEyes) gl.drawElements(gl.TRIANGLES, g.nEyes, gl.UNSIGNED_SHORT, g.nAll * 2); else gl.drawElements(gl.TRIANGLES, g.nAll, gl.UNSIGNED_SHORT, 0);
+  });
+  gl.disable(gl.BLEND); gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null);
 }
+const saveSkins = () => { try { localStorage.setItem('gurn.faces', JSON.stringify(skins)); return true; } catch (e) { log('could not save faces on this device: ' + e.name); return false; } };
 /* Cut the chosen face out of a photo: a square texture plus where each face point sits in it. */
 function registerFace(c, lm, keep = true){
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; for (let i = 0; i < 468; i++){ const x = lm[i].x * c.width, y = lm[i].y * c.height; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
@@ -594,8 +668,8 @@ function registerFace(c, lm, keep = true){
   const uv = []; for (let i = 0; i < 468; i++) uv.push(+((lm[i].x * c.width - x0) / (x1 - x0)).toFixed(4), +((lm[i].y * c.height - y0) / (y1 - y0)).toFixed(4));
   const s = { id:Date.now().toString(36), img:t.toDataURL('image/jpeg', .86), uv };
   skins.push(s); if (skins.length > 8) skins.shift();
-  if (keep){ try { localStorage.setItem('gurn.faces', JSON.stringify(skins)); } catch (e) { log('could not save the face on this device: ' + e.name); toast('Face added, but this browser would not save it for next time.'); } }
-  sel.face = s.id; store.set('sel', sel); tab = 'face'; loadSkin(); drawMenu();
+  if (keep && !saveSkins()) toast('Face added, but this browser would not save it for next time.');
+  sel.face = s.id; store.set('sel', sel); tab = 'face'; ensureSkin(s.id); drawMenu();
 }
 async function addFace(file){
   if (!file) return;
@@ -611,9 +685,9 @@ async function addFace(file){
   if (!found.length){ toast('No face found. Try a photo where the face is larger and looking at the camera.'); return; }
   if (found.length === 1){ registerFace(c, found[0]); return; }
   const pc = $('pickC'), x = pc.getContext('2d'); pc.width = c.width; pc.height = c.height; x.drawImage(c, 0, 0);
-  const centres = found.map((lm, n) => { x.beginPath(); OVAL.forEach((i, k) => x[k ? 'lineTo' : 'moveTo'](lm[i].x * c.width, lm[i].y * c.height)); x.closePath(); x.lineWidth = Math.max(3, c.width / 200); x.strokeStyle = '#ff4f9a'; x.stroke(); x.fillStyle = 'rgba(255,79,154,.18)'; x.fill(); return [lm[1].x * c.width, lm[1].y * c.height]; });
+  const centres = found.map(lm => { x.beginPath(); OVAL.forEach((i, k) => x[k ? 'lineTo' : 'moveTo'](lm[i].x * c.width, lm[i].y * c.height)); x.closePath(); x.lineWidth = Math.max(3, c.width / 200); x.strokeStyle = '#ff4f9a'; x.stroke(); x.fillStyle = 'rgba(255,79,154,.18)'; x.fill(); return [lm[1].x * c.width, lm[1].y * c.height]; });
   $('pick').hidden = false;
-  pc.onclick = e => { const r = pc.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * c.width, py = (e.clientY - r.top) / r.height * c.height; let best = 0, bd = 1e18; centres.forEach((p, n) => { const d = (p[0] - px) ** 2 + (p[1] - py) ** 2; if (d < bd){ bd = d; best = n; } }); $('pick').hidden = true; registerFace(c, found[best]); };
+  pc.onclick = e => { const r = pc.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * c.width, py = (e.clientY - r.top) / r.height * c.height; let best = 0, bd = 1e18; centres.forEach((p, k) => { const d = (p[0] - px) ** 2 + (p[1] - py) ** 2; if (d < bd){ bd = d; best = k; } }); $('pick').hidden = true; registerFace(c, found[best]); };
 }
 $('faceIn').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addFace(f); };
 $('pickCancel').onclick = () => { $('pick').hidden = true; };
@@ -672,14 +746,133 @@ const STICKERS = {
   }
 };
 
+/* ================= Makeup and face paint ================= */
+const rgba = (h, a) => { const c = hx(h); return `rgba(${c[0] * 255 | 0},${c[1] * 255 | 0},${c[2] * 255 | 0},${a})`; };
+function loop(c, f, ids){ ids.forEach((i, k) => { const p = f.P(i); k ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]); }); c.closePath(); }
+function drawMakeup(c, f){
+  const on = n => sel.makeup.includes(n), s = f.s; c.setTransform(1, 0, 0, 1, 0, 0);
+  if (on('blush')) for (const i of [50, 280]){ const p = f.P(i), g = c.createRadialGradient(p[0], p[1], 0, p[0], p[1], s * .17); g.addColorStop(0, rgba(sel.blushCol, .5)); g.addColorStop(1, rgba(sel.blushCol, 0)); c.fillStyle = g; c.beginPath(); c.arc(p[0], p[1], s * .17, 0, 7); c.fill(); }
+  if (on('shadow') || on('liner')) for (const lid of [LID_A, LID_B]){
+    const pts = lid.map(i => f.P(i)), n = pts.length - 1, side = f.L(lid[0])[0] >= 0 ? 1 : -1;
+    if (on('shadow')){ c.beginPath(); pts.forEach((p, k) => k ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1]));
+      for (let k = n; k >= 0; k--){ const h = s * (.03 + .075 * Math.sin(Math.PI * (k / n) * .8 + .3)), p = pts[k]; c.lineTo(p[0] + f.Y[0] * h, p[1] + f.Y[1] * h); } c.closePath();
+      c.globalCompositeOperation = 'multiply'; c.fillStyle = rgba(sel.shadowCol, .5); c.fill(); c.globalCompositeOperation = 'source-over'; c.fillStyle = rgba(sel.shadowCol, .22); c.fill(); }
+    if (on('liner')){ c.strokeStyle = 'rgba(12,8,16,.9)'; c.lineWidth = Math.max(1.5, s * .013); c.lineCap = c.lineJoin = 'round'; c.beginPath();
+      const o = pts[0]; c.moveTo(o[0] + (f.X[0] * side * .075 + f.Y[0] * .04) * s, o[1] + (f.X[1] * side * .075 + f.Y[1] * .04) * s); pts.forEach(p => c.lineTo(p[0], p[1])); c.stroke(); }
+  }
+  if (on('lips')){ c.beginPath(); loop(c, f, LIPS_OUT); loop(c, f, LIPS_INNER); c.globalCompositeOperation = 'multiply'; c.fillStyle = rgba(sel.lipCol, .62); c.fill('evenodd'); c.globalCompositeOperation = 'source-over'; c.fillStyle = rgba(sel.lipCol, .3); c.fill('evenodd'); }
+}
+/* Face paint is drawn flat on the face, in head units centred between the eyes. */
+function drawPaint(c, f){
+  const kind = sel.paint; if (kind === 'none') return;
+  const o = f.L(168), rel = p => { const d = sub(p, f.P(168)); return [dot(d, f.X) / f.s, -dot(d, f.Y) / f.s]; };
+  const eA = rel(f.eyeL), eB = rel(f.eyeR), nose = rel(f.P(1)), mouth = rel(f.mouth), ch = [rel(f.P(50)), rel(f.P(280))];
+  const ell = (x, y, rx, ry, rot = 0) => { c.beginPath(); c.ellipse(x, y, rx, ry, rot, 0, 7); };
+  const base = (col, a, mode) => { c.save(); c.translate(0, .15); c.scale(1, 1.36); const g = c.createRadialGradient(0, 0, .2, 0, 0, .49); g.addColorStop(0, rgba(col, a)); g.addColorStop(.8, rgba(col, a)); g.addColorStop(1, rgba(col, 0)); c.globalCompositeOperation = mode; c.fillStyle = g; c.beginPath(); c.arc(0, 0, .49, 0, 7); c.fill(); c.restore(); c.globalCompositeOperation = 'source-over'; };
+  const tri = (x, y, w, h, rot) => { c.save(); c.translate(x, y); c.rotate(rot); c.beginPath(); c.moveTo(-w / 2, 0); c.quadraticCurveTo(0, h * .5, 0, h); c.quadraticCurveTo(0, h * .5, w / 2, 0); c.closePath(); c.fill(); c.restore(); };
+  at(c, f, f.P(168));
+  if (kind === 'hero'){ const y = (eA[1] + eB[1]) / 2; c.beginPath(); c.moveTo(-.56, y - .06); c.bezierCurveTo(-.4, y - .3, -.1, y - .2, 0, y - .14); c.bezierCurveTo(.1, y - .2, .4, y - .3, .56, y - .06); c.bezierCurveTo(.5, y + .2, .14, y + .22, 0, y + .08); c.bezierCurveTo(-.14, y + .22, -.5, y + .2, -.56, y - .06); c.closePath();
+    for (const e of [eA, eB]){ c.moveTo(e[0] + .115, e[1]); c.ellipse(e[0], e[1], .115, .065, 0, 0, 7); }
+    c.fillStyle = 'rgba(190,24,48,.94)'; c.fill('evenodd'); c.strokeStyle = 'rgba(90,6,20,.9)'; c.lineWidth = .014; c.stroke(); }
+  else if (kind === 'clown'){ base('#ffffff', .42, 'source-over');
+    for (const e of [eA, eB]){ c.fillStyle = 'rgba(40,110,230,.85)'; tri(e[0], e[1] - .09, .12, -.2, 0); tri(e[0], e[1] + .08, .1, .17, 0); }
+    c.strokeStyle = 'rgba(225,30,45,.88)'; c.lineWidth = .055; c.lineCap = 'round'; c.beginPath(); c.ellipse(mouth[0], mouth[1] - .03, .27, .15, 0, .15, Math.PI - .15); c.stroke();
+    for (const p of ch){ c.fillStyle = 'rgba(255,90,120,.6)'; ell(p[0], p[1], .075, .075); c.fill(); }
+    const g = c.createRadialGradient(nose[0] - .03, nose[1] - .03, .01, nose[0], nose[1], .1); g.addColorStop(0, '#ff8a8a'); g.addColorStop(1, '#d4121f'); c.fillStyle = g; ell(nose[0], nose[1], .1, .1); c.fill(); }
+  else if (kind === 'skull'){ base('#f1ede2', .62, 'source-over'); c.fillStyle = 'rgba(8,6,10,.88)';
+    for (const e of [eA, eB]){ ell(e[0], e[1] - .01, .14, .12); c.fill(); }
+    c.beginPath(); c.moveTo(nose[0], nose[1] - .12); c.quadraticCurveTo(nose[0] + .1, nose[1] + .05, nose[0] + .03, nose[1] + .04); c.lineTo(nose[0], nose[1] - .01); c.lineTo(nose[0] - .03, nose[1] + .04); c.quadraticCurveTo(nose[0] - .1, nose[1] + .05, nose[0], nose[1] - .12); c.fill();
+    c.fillStyle = 'rgba(8,6,10,.3)'; for (const p of ch){ ell(p[0] * 1.15, p[1] + .1, .07, .15, p[0] > 0 ? -.3 : .3); c.fill(); }
+    c.strokeStyle = 'rgba(8,6,10,.85)'; c.lineWidth = .012; c.lineCap = 'round'; c.beginPath(); c.moveTo(mouth[0] - .25, mouth[1]); c.lineTo(mouth[0] + .25, mouth[1]);
+    for (let k = -5; k <= 5; k++){ const x = mouth[0] + k * .045, h = .065 - Math.abs(k) * .006; c.moveTo(x, mouth[1] - h); c.lineTo(x, mouth[1] + h); } c.stroke(); }
+  else if (kind === 'tiger'){ base('#ff9422', .8, 'multiply'); base('#ff9422', .25, 'source-over');
+    c.fillStyle = 'rgba(255,250,240,.6)'; ell(mouth[0], (mouth[1] + nose[1]) / 2 + .03, .2, .15); c.fill();
+    c.fillStyle = 'rgba(15,10,8,.9)'; ell(nose[0], nose[1], .075, .05); c.fill();
+    const top = rel(f.P(10))[1]; tri(0, top + .02, .1, .26, 0); tri(-.15, top + .04, .08, .2, .22); tri(.15, top + .04, .08, .2, -.22); tri(-.29, top + .1, .07, .15, .45); tri(.29, top + .1, .07, .15, -.45);
+    for (const sx of [-1, 1]) for (let k = 0; k < 3; k++) tri(sx * .47, .1 + k * .13, .075, .2, sx * 1.45 + sx * k * .12);
+    c.strokeStyle = 'rgba(15,10,8,.85)'; c.lineWidth = .008; for (const sx of [-1, 1]) for (const k of [-1, 0, 1]){ c.beginPath(); c.moveTo(nose[0] + sx * .1, nose[1] + .09 + k * .02); c.lineTo(nose[0] + sx * .36, nose[1] + .07 + k * .07); c.stroke(); } }
+  c.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/* ================= My stickers: uploaded pictures pinned to the face ================= */
+let customs = store.get('stickers', []), editId = null;
+const customImg = {}, PINS = { 'above head':[10, -.5], forehead:[10, -.05], eyes:[168, 0], nose:[1, 0], mouth:[13, 0], chin:[152, .05] };
+const saveCustoms = () => { try { localStorage.setItem('gurn.stickers', JSON.stringify(customs)); return true; } catch (e) { log('could not save stickers on this device: ' + e.name); return false; } };
+function drawCustoms(c, f){
+  for (const s of customs){ if (!sel.custom.includes(s.id)) continue;
+    const im = customImg[s.id] || (customImg[s.id] = Object.assign(new Image(), {src:s.img})); if (!im.complete || !im.naturalWidth) continue;
+    const pin = PINS[s.pin] || PINS.forehead; at(c, f, f.P(pin[0])); c.translate(s.dx, s.dy + pin[1]); c.rotate(s.rot); const h = s.scale * im.naturalHeight / im.naturalWidth; c.drawImage(im, -s.scale / 2, -h / 2, s.scale, h);
+    if (s.id === editId && tab === 'custom'){ c.strokeStyle = 'rgba(98,232,207,.9)'; c.lineWidth = .008; c.setLineDash([.03, .03]); c.strokeRect(-s.scale / 2, -h / 2, s.scale, h); c.setLineDash([]); } }
+  c.setTransform(1, 0, 0, 1, 0, 0);
+}
+async function addSticker(file){ if (!file) return; try { const cv = await fileToCanvas(file, 420), s = { id:Date.now().toString(36), img:cv.toDataURL('image/png'), pin:'forehead', dx:0, dy:0, scale:.6, rot:0 };
+    customs.push(s); if (customs.length > 12) customs.shift(); if (!saveCustoms()) toast('Sticker added, but this browser would not save it for next time.');
+    sel.custom.push(s.id); editId = s.id; store.set('sel', sel); drawMenu(); } catch (e) { toast(e.message); } }
+$('stickIn').onchange = e => { const f = e.target.files[0]; e.target.value = ''; addSticker(f); };
+/* Drag to move, pinch to resize and turn the sticker being edited. */
+{ const pts = new Map(), stage = $('stage'); let last = null;
+  const cur = () => tab === 'custom' && customs.find(s => s.id === editId && sel.custom.includes(s.id));
+  const geom = () => { const a = [...pts.values()]; return a.length > 1 ? { d:Math.hypot(a[1].x - a[0].x, a[1].y - a[0].y), a:Math.atan2(a[1].y - a[0].y, a[1].x - a[0].x) } : null; };
+  stage.addEventListener('pointerdown', e => { if (!cur()) return; pts.set(e.pointerId, {x:e.clientX, y:e.clientY}); last = geom(); });
+  stage.addEventListener('pointermove', e => { const s = cur(), p = pts.get(e.pointerId); if (!s || !p) return; const f = faces[0], r = out.getBoundingClientRect(), k = Math.max(r.width / out.width, r.height / out.height) || 1, dx = (e.clientX - p.x) / k, dy = (e.clientY - p.y) / k;
+    p.x = e.clientX; p.y = e.clientY;
+    if (pts.size === 1 && f){ s.dx += (dx * f.X[0] + dy * f.X[1]) / f.s; s.dy += -(dx * f.Y[0] + dy * f.Y[1]) / f.s; }
+    else if (pts.size > 1){ const g = geom(); if (last && g){ s.scale = clamp(s.scale * g.d / (last.d || 1), .08, 3); s.rot += g.a - last.a; } last = g; } });
+  const up = e => { if (pts.delete(e.pointerId)){ last = geom(); saveCustoms(); } };
+  stage.addEventListener('pointerup', up); stage.addEventListener('pointercancel', up); }
+
+/* ================= Mirror and clone effects (applied to the finished picture) ================= */
+const fxC = document.createElement('canvas'), fctx = fxC.getContext('2d');
+function postFx(){
+  const m = sel.fx; if (m === 'none') return; const W = out.width, H = out.height, c = octx;
+  if (fxC.width !== W || fxC.height !== H){ fxC.width = W; fxC.height = H; }
+  fctx.drawImage(out, 0, 0); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.globalCompositeOperation = 'source-over'; c.save();
+  if (m === 'left'){ c.translate(W, 0); c.scale(-1, 1); c.drawImage(fxC, 0, 0, W / 2, H, 0, 0, W / 2, H); }
+  else if (m === 'right'){ c.translate(W, 0); c.scale(-1, 1); c.drawImage(fxC, W / 2, 0, W / 2, H, W / 2, 0, W / 2, H); }
+  else if (m === 'updown'){ c.translate(0, H); c.scale(1, -1); c.drawImage(fxC, 0, 0, W, H / 2, 0, 0, W, H / 2); }
+  else if (m === 'x4' || m === 'x9'){ const n = m === 'x4' ? 2 : 3; for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) c.drawImage(fxC, x * W / n, y * H / n, W / n, H / n); }
+  else if (m === 'kal'){ const n = 10, th = Math.PI * 2 / n, R = Math.hypot(W, H); for (let k = 0; k < n; k++){ c.save(); c.translate(W / 2, H / 2); c.rotate((k % 2 ? k + 1 : k) * th); if (k % 2) c.scale(1, -1);
+      c.beginPath(); c.moveTo(0, 0); c.arc(0, 0, R, -.004, th + .004); c.closePath(); c.clip(); c.drawImage(fxC, -W / 2, -H / 2); c.restore(); } }
+  c.restore();
+}
+
+/* ================= Face games ================= */
+const ANIMALS = ['an otter', 'a badger', 'a puffin', 'a hedgehog', 'a red fox', 'a seal', 'a hare', 'a robin', 'a pine marten', 'a heron', 'a barn owl', 'a stoat'];
+const game = { items:[], score:0, miss:0, next:0, t0:0, picks:[] };
+function resetGame(){ game.items.length = 0; game.score = game.miss = 0; game.next = 0; game.t0 = time; game.picks = []; }
+function label(c, text, x, y, px, fill = '#fff'){ c.font = `800 ${px}px Figtree, system-ui, sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round'; c.lineWidth = px * .22; c.strokeStyle = 'rgba(18,14,26,.85)'; c.strokeText(text, x, y); c.fillStyle = fill; c.fillText(text, x, y); }
+function runGame(c, dt){
+  const W = out.width, H = out.height; c.setTransform(1, 0, 0, 1, 0, 0);
+  if (sel.game === 'catch'){
+    game.next -= dt; if (game.next <= 0){ game.next = Math.max(.35, .9 - game.score * .02); game.items.push({ x:W * (.12 + Math.random() * .76), y:-W * .05, vy:H * (.3 + Math.random() * .15 + game.score * .006), r:W * .04, hue:Math.random() * 360, rot:Math.random() * 6 }); }
+    for (let i = game.items.length - 1; i >= 0; i--){ const it = game.items[i]; it.y += it.vy * dt; it.rot += dt * 2;
+      const eater = faces.find(f => (f.bs.jawOpen || 0) > .28 && Math.hypot(it.x - f.mouth[0], it.y - f.mouth[1]) < f.s * .22);
+      if (eater){ game.score++; game.items.splice(i, 1); for (let n = 0; n < 10; n++){ const a = Math.random() * 6.28, v = eater.s * (.4 + Math.random()); spawn({ t:'star', x:it.x, y:it.y, vx:Math.cos(a) * v, vy:Math.sin(a) * v, r:eater.s * .04, life:.6, hue:it.hue, vr:5, drag:.94 }); } continue; }
+      if (it.y > H + it.r){ game.miss++; game.items.splice(i, 1); continue; }
+      c.save(); c.translate(it.x, it.y); c.rotate(it.rot); c.fillStyle = '#d9a066'; c.beginPath(); c.arc(0, 0, it.r, 0, 7); c.arc(0, 0, it.r * .33, 0, 7, true); c.fill('evenodd');
+      c.fillStyle = `hsl(${it.hue},85%,68%)`; c.beginPath(); c.arc(0, 0, it.r * .86, 0, 7); c.arc(0, 0, it.r * .45, 0, 7, true); c.fill('evenodd');
+      c.fillStyle = '#fff'; for (let k = 0; k < 6; k++){ const a = k * 1.05; c.fillRect(Math.cos(a) * it.r * .65 - it.r * .07, Math.sin(a) * it.r * .65 - it.r * .03, it.r * .14, it.r * .06); } c.restore(); }
+    label(c, `Caught ${game.score}   Missed ${game.miss}`, W / 2, H * .17, W * .05); if (time - game.t0 < 3) label(c, 'Open wide to catch them', W / 2, H * .23, W * .035, '#62e8cf');
+  } else if (sel.game === 'which'){
+    const el = time - game.t0, rolling = el < 3;
+    faces.forEach((f, i) => { if (game.picks[i] == null) game.picks[i] = Math.floor(Math.random() * ANIMALS.length);
+      const pick = rolling ? ANIMALS[Math.floor(el * 12 + i * 5) % ANIMALS.length] : ANIMALS[game.picks[i]];
+      at(c, f, f.P(10)); c.scale(.01, .01); c.translate(0, -52 + (rolling ? 0 : Math.sin(time * 3) * 1.5));
+      c.fillStyle = 'rgba(246,241,255,.95)'; c.beginPath(); c.roundRect(-52, -19, 104, 38, 9); c.fill(); c.beginPath(); c.moveTo(-7, 18); c.lineTo(0, 29); c.lineTo(7, 18); c.fill();
+      c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = '#6b5a85'; c.font = '600 7px Figtree, system-ui, sans-serif'; c.fillText('WHICH ANIMAL ARE YOU?', 0, -9);
+      c.fillStyle = rolling ? '#120e1a' : '#d81b6f'; c.font = '800 15px Figtree, system-ui, sans-serif'; c.fillText(pick, 0, 6); });
+    c.setTransform(1, 0, 0, 1, 0, 0);
+  }
+}
+
 /* ================= Triggers and particles ================= */
 const parts = [], trig = [];
-const TRIGGERS = { bubbles:'Open mouth: bubbles', confetti:'Raise brows: confetti', sparkle:'Wink: sparkles', kiss:'Pucker: hearts' };
-function spawn(o){ if (parts.length < 500) parts.push(Object.assign({ vx:0, vy:0, g:0, life:1, age:0, rot:0, vr:0, hue:0, drag:.99 }, o)); }
+const TRIGGERS = { bubbles:'Open mouth: bubbles', confetti:'Raise brows: confetti', sparkle:'Wink: sparkles', kiss:'Pucker: hearts', fire:'Tongue out: flames', sun:'Big smile: stars', tilt:'Tilt head: next sticker' };
+function spawn(o){ if (parts.length < 600) parts.push(Object.assign({ vx:0, vy:0, g:0, life:1, age:0, rot:0, vr:0, hue:0, drag:.99 }, o)); }
 function runTriggers(dt){
   const k = 1.5 - D.sens, on = n => sel.triggers.includes(n);
   faces.forEach((f, i) => {
-    const st = trig[i] || (trig[i] = { brow:false, wink:false, cool:0, acc:0 }), b = f.bs, s = f.s; st.acc += dt;
+    const st = trig[i] || (trig[i] = { brow:false, wink:false, tilt:false, cool:0, acc:0, sun:0 }), b = f.bs, s = f.s; st.acc += dt;
     if (on('bubbles') && (b.jawOpen || 0) > .32 * k && st.acc > .05){ st.acc = 0; spawn({ t:'bubble', x:f.mouth[0] + (Math.random() - .5) * s * .15, y:f.mouth[1], vx:(Math.random() - .5) * s * .5 - f.Y[0] * s * .2, vy:-s * (.5 + Math.random() * .6), r:s * (.03 + Math.random() * .06), life:1.6 + Math.random(), hue:170 + Math.random() * 140 }); }
     const brow = (b.browInnerUp || 0) > .5 * k;
     if (on('confetti') && brow && !st.brow){ const top = f.P(10); for (let n = 0; n < 60; n++) spawn({ t:'conf', x:top[0], y:top[1] - s * .2, vx:(Math.random() - .5) * s * 3, vy:-s * (1 + Math.random() * 2.2), g:s * 3.2, r:s * (.02 + Math.random() * .025), life:1.8 + Math.random(), hue:Math.random() * 360, rot:Math.random() * 6, vr:(Math.random() - .5) * 14 }); }
@@ -687,8 +880,13 @@ function runTriggers(dt){
     const bl = b.eyeBlinkLeft || 0, br = b.eyeBlinkRight || 0, wink = Math.abs(bl - br) > .35 * k && Math.max(bl, br) > .5 * k;
     if (on('sparkle') && wink && !st.wink){ /* blendshape "Left" is the subject's own left eye (points 263/362) */
       const eye = bl > br ? f.eyeR : f.eyeL; for (let n = 0; n < 16; n++){ const a = Math.random() * 6.28, v = s * (.3 + Math.random() * 1.1); spawn({ t:'star', x:eye[0], y:eye[1], vx:Math.cos(a) * v, vy:Math.sin(a) * v, r:s * (.03 + Math.random() * .05), life:.7 + Math.random() * .5, hue:45 + Math.random() * 20, rot:Math.random() * 3, vr:4, drag:.95 }); } }
-    st.wink = wink; st.cool -= dt;
+    st.wink = wink; st.cool -= dt; st.sun -= dt;
     if (on('kiss') && (b.mouthPucker || 0) > .6 * k && st.cool <= 0){ st.cool = .16; spawn({ t:'heart', x:f.mouth[0] + (Math.random() - .5) * s * .2, y:f.mouth[1], vx:(Math.random() - .5) * s * .6, vy:-s * (.5 + Math.random() * .5), r:s * (.05 + Math.random() * .05), life:1.5 + Math.random() * .6, hue:330 + Math.random() * 30 }); }
+    if (on('fire') && (b.tongueOut || 0) > .35 * k) for (let n = 0; n < 3; n++) spawn({ t:'flame', x:f.mouth[0] + (Math.random() - .5) * s * .1, y:f.mouth[1] + s * .05, vx:-f.Y[0] * s * 1.6 + (Math.random() - .5) * s * .7, vy:-f.Y[1] * s * 1.6 + (Math.random() - .5) * s * .5, g:-s * 1.2, r:s * (.06 + Math.random() * .07), life:.5 + Math.random() * .4, hue:12 + Math.random() * 38, drag:.96 });
+    if (on('sun') && ((b.mouthSmileLeft || 0) + (b.mouthSmileRight || 0)) / 2 > .55 * k && st.sun <= 0){ st.sun = .07; const a = Math.random() * 6.28, c0 = f.P(168); spawn({ t:'star', x:c0[0] + Math.cos(a) * s * .85, y:c0[1] + Math.sin(a) * s * .95, vx:Math.cos(a) * s * .5, vy:Math.sin(a) * s * .5, r:s * (.04 + Math.random() * .05), life:.8, hue:48, vr:3 }); }
+    const tilt = Math.abs(f.roll) > .38 * k;
+    if (on('tilt') && i === 0 && tilt && !st.tilt){ const ids = SIMPLE.sticker.map(x => x[0]).filter(x => x !== 'none'); sel.sticker = ids[(ids.indexOf(sel.sticker) + 1) % ids.length]; store.set('sel', sel); drawMenu(); }
+    st.tilt = tilt;
   });
 }
 function drawParts(c, dt){
@@ -701,26 +899,31 @@ function drawParts(c, dt){
       c.fillStyle = 'rgba(255,255,255,.8)'; c.beginPath(); c.arc(x - p.r * .35, p.y - p.r * .35, p.r * .16, 0, 7); c.fill(); }
     else if (p.t === 'conf'){ c.save(); c.translate(p.x, p.y); c.rotate(p.rot); c.fillStyle = `hsl(${p.hue},90%,62%)`; c.fillRect(-p.r, -p.r * .5 * Math.cos(p.rot * 1.7), p.r * 2, p.r * Math.cos(p.rot * 1.7)); c.restore(); }
     else if (p.t === 'star'){ c.save(); c.translate(p.x, p.y); c.rotate(p.rot); c.fillStyle = `hsl(${p.hue},100%,78%)`; star(c, 0, 0, p.r); c.fill(); c.restore(); }
+    else if (p.t === 'flame'){ const r = p.r * (1 - p.age / p.life * .6); c.globalCompositeOperation = 'lighter'; c.globalAlpha = a * .55; c.fillStyle = `hsl(${p.hue + p.age * 30},100%,55%)`; c.beginPath(); c.arc(p.x, p.y, r, 0, 7); c.fill(); c.globalCompositeOperation = 'source-over'; }
     else { c.fillStyle = `hsl(${p.hue},95%,62%)`; heart(c, p.x + Math.sin(p.age * 4 + p.hue) * p.r * .4, p.y, p.r * (1 + p.age * .25)); c.fill(); }
   }
   c.globalAlpha = 1;
 }
 
 /* ================= Main loop ================= */
-let prevT = performance.now();
+let prevT = performance.now(), frameN = 0;
+const once = {}; function guard(name, fn){ try { return fn(); } catch (e) { if (!once[name]){ once[name] = 1; log(name + ' error: ' + e.message); } } }
 function frame(now){
   requestAnimationFrame(frame);
-  const dt = Math.min(.1, (now - prevT) / 1000); prevT = now; time += dt;
+  const dt = Math.min(.1, (now - prevT) / 1000); prevT = now; time += dt; frameN++;
   if (D.test){ src.el = testC; src.w = testC.width; src.h = testC.height; src.mirror = false; }
   else if (src.kind === 'cam'){ if (cam.readyState < 2 || !cam.videoWidth) return; src.el = cam; src.w = cam.videoWidth; src.h = cam.videoHeight; src.mirror = facing === 'user'; }
   else if (src.kind !== 'photo') return;
   if (out.width !== src.w || out.height !== src.h){ out.width = dbg.width = src.w; out.height = dbg.height = src.h; }
-  faces = detect(now); segment(now);
-  try { renderGL(); } catch (e) { if (!frame.err){ frame.err = 1; log('render error: ' + e.message); } }
-  octx.setTransform(1, 0, 0, 1, 0, 0); octx.drawImage(glc, 0, 0);
+  faces = detect(now); faces.sort((a, b) => a.O[0] - b.O[0]); segment(now);
+  const reset = () => { octx.setTransform(1, 0, 0, 1, 0, 0); octx.globalAlpha = 1; octx.globalCompositeOperation = 'source-over'; };
+  guard('render', renderBase); reset(); octx.drawImage(glc, 0, 0);
+  guard('paint', () => { for (const f of faces){ drawPaint(octx, f); if (sel.makeup.length) drawMakeup(octx, f); } }); reset();
+  if (guard('3D', render3D)) octx.drawImage(glc, 0, 0);
   const st = STICKERS[sel.sticker];
-  if (st) for (const f of faces){ try { st(octx, f); } catch (e) { if (!frame.serr){ frame.serr = 1; log('sticker error: ' + e.message); } } }
-  runTriggers(dt); drawParts(octx, dt);
+  guard('sticker', () => { for (const f of faces){ if (st) st(octx, f); if (sel.custom.length) drawCustoms(octx, f); } }); reset();
+  guard('trigger', () => runTriggers(dt)); guard('game', () => runGame(octx, dt)); guard('particles', () => drawParts(octx, dt)); reset();
+  guard('mirror', postFx);
   perf.frames++; if (now - perf.last > 500){ perf.fps = perf.frames * 1000 / (now - perf.last); perf.frames = 0; perf.last = now; if (D.on) stats(); }
   if (D.on) drawDebug();
 }
@@ -734,10 +937,10 @@ function drawDebug(){
 function stats(){
   const f = faces[0], d = v => (v * 57.3).toFixed(0).padStart(4), n = v => (v || 0).toFixed(2);
   let t = `fps ${perf.fps.toFixed(0)}   source ${D.test ? 'test face' : src.kind} ${src.w}x${src.h}${src.mirror ? ' mirrored' : ''}\n` +
-    `face ${perf.faceMs.toFixed(1)}ms (${perf.delegate})   mask ${perf.segMs.toFixed(1)}ms (${perf.segDelegate})${mask.has ? ' ' + mask.w + 'x' + mask.h : ' off'}\n` +
-    `faces ${faces.length}   particles ${parts.length}\n`;
-  if (f) t += `yaw${d(f.yaw)} pitch${d(f.pitch)} roll${d(f.roll)}  width ${f.s.toFixed(0)}px\njaw ${n(f.bs.jawOpen)} brow ${n(f.bs.browInnerUp)} blinkL ${n(f.bs.eyeBlinkLeft)} blinkR ${n(f.bs.eyeBlinkRight)} pucker ${n(f.bs.mouthPucker)}\n`;
-  t += `on: ${['sticker', 'warp', 'mask3d', 'colour', 'bg'].map(k => sel[k]).concat(sel.face !== 'none' ? 'face swap (' + skin.how + ')' : 'none').filter(v => v !== 'none').concat(sel.triggers).join(', ') || 'nothing'}`;
+    `face ${perf.faceMs.toFixed(1)}ms (${perf.delegate})   mask ${perf.segMs.toFixed(1)}ms (${perf.segDelegate}${segKind ? ' ' + segKind : ''})${mask.has ? ' ' + mask.w + 'x' + mask.h : ' off'}\n` +
+    `faces ${faces.length}   particles ${parts.length}   face mesh ${skinInfo.how}\n`;
+  if (f) t += `yaw${d(f.yaw)} pitch${d(f.pitch)} roll${d(f.roll)}  width ${f.s.toFixed(0)}px\njaw ${n(f.bs.jawOpen)} brow ${n(f.bs.browInnerUp)} blinkL ${n(f.bs.eyeBlinkLeft)} blinkR ${n(f.bs.eyeBlinkRight)}\npucker ${n(f.bs.mouthPucker)} smile ${n(((f.bs.mouthSmileLeft || 0) + (f.bs.mouthSmileRight || 0)) / 2)} tongue ${n(f.bs.tongueOut)}\n`;
+  t += `on: ${TABS.filter(x => tabOn(x[0])).map(x => x[1]).join(', ') || 'nothing'}`;
   $('stats').textContent = t;
 }
 
@@ -760,27 +963,50 @@ function fileToCanvas(file, max){ return new Promise((res, rej) => { const img =
 async function usePhoto(file){
   if (!file) return;
   try { const c = await fileToCanvas(file, 1280); if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
-    src.kind = 'photo'; src.el = c; src.w = c.width; src.h = c.height; src.mirror = false; $('start').hidden = true; $('tray').hidden = false; $('hint').textContent = 'Photo mode · tap the arrows to go back to the camera'; log('photo source ' + c.width + 'x' + c.height);
+    src.kind = 'photo'; src.el = c; src.w = c.width; src.h = c.height; src.mirror = false; $('start').hidden = true; $('tray').hidden = false; setHint(); log('photo source ' + c.width + 'x' + c.height);
   } catch (e) { toast(e.message); }
 }
 $('startCam').onclick = startCam;
 $('photoIn').onchange = e => { usePhoto(e.target.files[0]); e.target.value = ''; };
 $('photoIn2').onchange = e => { usePhoto(e.target.files[0]); e.target.value = ''; };
-$('flip').onclick = async () => { if (src.kind === 'cam') facing = facing === 'user' ? 'environment' : 'user'; D.test = false; $('dTest').checked = false; if (await startCam()) $('hint').textContent = 'Tap for a photo · hold for video'; };
+$('flip').onclick = async () => { if (src.kind === 'cam') facing = facing === 'user' ? 'environment' : 'user'; D.test = false; $('dTest').checked = false; await startCam(); setHint(); };
 $('bgIn').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { const c = await fileToCanvas(f, 1600); gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c); bgAsp = c.width / c.height; hasBg = true; pick('bg', 'photo', true); } catch (err) { toast(err.message); } };
 
-/* ================= Capture ================= */
-let shot = null, rec = null, recT = 0, recTimer = 0, holdT = 0, micTried = false, mic = null;
+/* ================= Capture: photo, video, timer, caption and doodles ================= */
+let shot = null, rec = null, recT = 0, recTimer = 0, holdT = 0, micTried = false, mic = null, pendingStop = false, starting = false, counting = 0;
 const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `gurn-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`; };
-function showShot(blob, ext){
-  if (shot) URL.revokeObjectURL(shot.url);
-  shot = { blob, url:URL.createObjectURL(blob), name:stamp() + '.' + ext };
-  const isV = blob.type.startsWith('video'); $('shotImg').hidden = isV; $('shotVid').hidden = !isV;
-  if (isV){ $('shotVid').src = shot.url; $('shotVid').play().catch(() => {}); } else $('shotImg').src = shot.url;
+const editC = $('editC'), ectx = editC.getContext('2d'), baseC = document.createElement('canvas');
+const edit = { strokes:[], text:'', y:.72, draw:false, cur:null };
+function drawEdit(){
+  const W = editC.width, H = editC.height, c = ectx; c.drawImage(baseC, 0, 0); c.lineCap = c.lineJoin = 'round';
+  for (const s of edit.strokes){ c.strokeStyle = s.col; c.lineWidth = W * .012; c.beginPath(); s.pts.forEach((p, k) => k ? c.lineTo(p[0], p[1]) : c.moveTo(p[0], p[1])); if (s.pts.length === 1) c.lineTo(s.pts[0][0] + .1, s.pts[0][1]); c.stroke(); }
+  if (edit.text){ const bh = W * .085, y = clamp(edit.y, .04, .96) * H; c.fillStyle = 'rgba(0,0,0,.58)'; c.fillRect(0, y - bh / 2, W, bh);
+    let px = W * .042; c.font = `600 ${px}px Figtree, system-ui, sans-serif`; const w = c.measureText(edit.text).width; if (w > W * .94){ px *= W * .94 / w; c.font = `600 ${px}px Figtree, system-ui, sans-serif`; }
+    c.fillStyle = '#fff'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(edit.text, W / 2, y); }
+}
+function showPhoto(){
+  baseC.width = editC.width = out.width; baseC.height = editC.height = out.height; baseC.getContext('2d').drawImage(out, 0, 0);
+  edit.strokes = []; edit.text = ''; edit.y = .72; edit.draw = false; $('capText').value = ''; $('drawBtn').setAttribute('aria-pressed', 'false'); drawEdit();
+  shot = { photo:true, name:stamp() + '.jpg' }; editC.hidden = false; $('editTools').hidden = false; $('shotVid').hidden = true;
+  $('share').hidden = !(navigator.canShare && navigator.share); $('sheet').hidden = false;
+}
+function showVideo(blob, ext){
+  if (shot && shot.url) URL.revokeObjectURL(shot.url);
+  shot = { blob, url:URL.createObjectURL(blob), name:stamp() + '.' + ext }; editC.hidden = true; $('editTools').hidden = true; $('shotVid').hidden = false; $('shotVid').src = shot.url; $('shotVid').play().catch(() => {});
   let can = false; try { can = !!navigator.canShare && navigator.canShare({ files:[new File([blob], shot.name, {type:blob.type})] }); } catch (e) {}
   $('share').hidden = !can; $('sheet').hidden = false;
 }
-function takePhoto(){ out.toBlob(b => b ? showShot(b, 'jpg') : toast('Could not capture the photo'), 'image/jpeg', .92); }
+const shotBlob = () => shot.photo ? new Promise(res => editC.toBlob(res, 'image/jpeg', .92)) : Promise.resolve(shot.blob);
+{ const pos = e => { const r = editC.getBoundingClientRect(); return [(e.clientX - r.left) / r.width * editC.width, (e.clientY - r.top) / r.height * editC.height]; };
+  editC.addEventListener('pointerdown', e => { e.preventDefault(); try { editC.setPointerCapture(e.pointerId); } catch (x) {} const p = pos(e); if (edit.draw){ edit.cur = { col:$('drawCol').value, pts:[p] }; edit.strokes.push(edit.cur); } else if (edit.text){ edit.cur = 'cap'; edit.y = p[1] / editC.height; } drawEdit(); });
+  editC.addEventListener('pointermove', e => { if (!edit.cur) return; const p = pos(e); if (edit.cur === 'cap') edit.y = p[1] / editC.height; else edit.cur.pts.push(p); drawEdit(); });
+  const end = () => { edit.cur = null; }; editC.addEventListener('pointerup', end); editC.addEventListener('pointercancel', end); }
+$('capText').oninput = e => { edit.text = e.target.value.trim(); drawEdit(); };
+$('drawBtn').onclick = () => { edit.draw = !edit.draw; $('drawBtn').setAttribute('aria-pressed', edit.draw); toast(edit.draw ? 'Draw on the photo with your finger' : 'Drag the caption up or down'); };
+$('undoBtn').onclick = () => { edit.strokes.pop(); drawEdit(); };
+
+function countdown(fn){ const n = sel.timer | 0; if (!n){ fn(); return; } if (counting) return; counting = n; const el = $('count'); el.hidden = false; el.textContent = n;
+  const iv = setInterval(() => { counting--; if (counting <= 0){ clearInterval(iv); el.hidden = true; counting = 0; fn(); } else el.textContent = counting; }, 1000); }
 async function startRec(){
   if (!window.MediaRecorder || !out.captureStream){ toast('This browser cannot record video. Photos still work.'); return; }
   const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
@@ -790,59 +1016,106 @@ async function startRec(){
   if (mic) mic.getAudioTracks().forEach(t => s.addTrack(t));
   const chunks = []; rec = new MediaRecorder(s, { mimeType:type, videoBitsPerSecond:5e6 });
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
-  rec.onstop = () => { clearInterval(recTimer); $('shutter').classList.remove('rec'); $('hint').textContent = 'Tap for a photo · hold for video'; const b = new Blob(chunks, {type:type.split(';')[0]}); rec = null; if (b.size) showShot(b, type.includes('mp4') ? 'mp4' : 'webm'); else toast('Nothing was recorded'); };
+  rec.onstop = () => { clearInterval(recTimer); $('shutter').classList.remove('rec'); setHint(); const b = new Blob(chunks, {type:type.split(';')[0]}); rec = null; if (b.size) showVideo(b, type.includes('mp4') ? 'mp4' : 'webm'); else toast('Nothing was recorded'); };
   rec.onerror = e => log('recorder error: ' + (e.error && e.error.message));
   rec.start(250); recT = performance.now(); $('shutter').classList.add('rec');
-  recTimer = setInterval(() => { const t = (performance.now() - recT) / 1000; $('hint').innerHTML = 'Recording <b>' + t.toFixed(1) + 's</b> · let go to stop'; if (t > 60) stopRec(); }, 100);
+  recTimer = setInterval(() => { const t = (performance.now() - recT) / 1000; $('hint').innerHTML = 'Recording <b>' + t.toFixed(1) + 's</b> · ' + (sel.tapRec ? 'tap to stop' : 'let go to stop'); if (t > 60) stopRec(); }, 100);
   if (pendingStop){ pendingStop = false; setTimeout(stopRec, 600); }
 }
-let pendingStop = false, starting = false;
 function stopRec(){ if (rec && rec.state !== 'inactive') rec.stop(); }
+function setHint(){ $('hint').textContent = src.kind === 'photo' && !D.test ? 'Photo mode · tap the arrows to go back to the camera' : tab === 'custom' && editId ? 'Drag the sticker to move it · pinch to resize and turn' : sel.tapRec ? 'Tap to start and stop recording' : 'Tap for a photo · hold for video'; }
 const sh = $('shutter');
-sh.addEventListener('pointerdown', e => { e.preventDefault(); try { sh.setPointerCapture(e.pointerId); } catch (x) {} pendingStop = false; holdT = setTimeout(async () => { holdT = 0; starting = true; await startRec(); starting = false; }, 350); });
-const release = () => { if (holdT){ clearTimeout(holdT); holdT = 0; takePhoto(); } else if (starting) pendingStop = true; else stopRec(); };
-sh.addEventListener('pointerup', release); sh.addEventListener('pointercancel', () => { if (holdT){ clearTimeout(holdT); holdT = 0; } else stopRec(); });
+sh.addEventListener('pointerdown', e => { e.preventDefault(); try { sh.setPointerCapture(e.pointerId); } catch (x) {} pendingStop = false; if (rec || sel.tapRec) { holdT = -1; return; } holdT = setTimeout(async () => { holdT = 0; starting = true; await startRec(); starting = false; }, 350); });
+const release = () => {
+  if (holdT === -1){ holdT = 0; if (rec) stopRec(); else countdown(startRec); }
+  else if (holdT){ clearTimeout(holdT); holdT = 0; countdown(showPhoto); }
+  else if (starting) pendingStop = true; else stopRec(); };
+sh.addEventListener('pointerup', release); sh.addEventListener('pointercancel', () => { if (holdT > 0) clearTimeout(holdT); else if (holdT === 0) stopRec(); holdT = 0; });
 sh.addEventListener('contextmenu', e => e.preventDefault());
-$('save').onclick = () => { if (!shot) return; const a = document.createElement('a'); a.href = shot.url; a.download = shot.name; document.body.appendChild(a); a.click(); a.remove(); toast('Saved as ' + shot.name); };
-$('share').onclick = async () => { try { await navigator.share({ files:[new File([shot.blob], shot.name, {type:shot.blob.type})] }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing did not work here. Use Save instead.'); } };
+function saveBlob(blob, name){ const url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000); }
+$('save').onclick = async () => { if (!shot) return; const b = await shotBlob(); if (!b){ toast('Could not make the file'); return; } saveBlob(b, shot.name); toast('Saved as ' + shot.name); };
+$('share').onclick = async () => { try { const b = await shotBlob(), file = new File([b], shot.name, {type:b.type}); if (!navigator.canShare({files:[file]})) throw new Error('unsupported'); await navigator.share({ files:[file] }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing did not work here. Use Save instead.'); } };
 $('discard').onclick = () => { $('sheet').hidden = true; $('shotVid').pause(); $('shotVid').removeAttribute('src'); };
 
+/* Export and import saved faces and stickers */
+function exportFilters(){ if (!skins.length && !customs.length){ toast('Nothing to export yet. Add a face or a sticker first.'); return; } saveBlob(new Blob([JSON.stringify({ app:'gurn', v:1, faces:skins, stickers:customs })], {type:'application/json'}), 'gurn-filters.json'); toast('Exported ' + skins.length + ' faces and ' + customs.length + ' stickers'); }
+$('importIn').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { const d = JSON.parse(await f.text()); if (d.app !== 'gurn') throw new Error('not a Gurn file'); let n = 0;
+    for (const s of d.faces || []) if (s && s.id && typeof s.img === 'string' && s.img.startsWith('data:image/') && Array.isArray(s.uv) && s.uv.length === 936 && !skins.some(x => x.id === s.id)){ skins.push({id:String(s.id), img:s.img, uv:s.uv.map(Number)}); n++; }
+    for (const s of d.stickers || []) if (s && s.id && typeof s.img === 'string' && s.img.startsWith('data:image/') && !customs.some(x => x.id === s.id)){ customs.push({ id:String(s.id), img:s.img, pin:PINS[s.pin] ? s.pin : 'forehead', dx:+s.dx || 0, dy:+s.dy || 0, scale:clamp(+s.scale || .6, .08, 3), rot:+s.rot || 0 }); n++; }
+    skins = skins.slice(-8); customs = customs.slice(-12); const ok = saveSkins() & saveCustoms(); drawMenu(); toast(n ? 'Imported ' + n + (ok ? '' : ', but this browser would not save them for next time') : 'Nothing new in that file');
+  } catch (err) { toast('That file is not a Gurn export.'); log('import failed: ' + err.message); } };
+
 /* ================= Filter picker ================= */
-const MENU = [
-  ['face', 'Face swap', () => [['none', 'None'], ['add', 'Add a face…']].concat(skins.map((s, i) => [s.id, 'Face ' + (i + 1), s.img]))],
-  ['sticker', 'Stickers', [['none', 'None'], ['pup', 'Pup'], ['cat', 'Cat'], ['bunny', 'Bunny'], ['flowers', 'Flower crown'], ['hearts', 'Heart eyes'], ['gent', 'Gent'], ['rosy', 'Rosy']]],
-  ['warp', 'Warps', [['none', 'None'], ['bugeyes', 'Bug eyes'], ['tinymouth', 'Tiny mouth'], ['bigmouth', 'Big mouth'], ['bignose', 'Big nose'], ['chipmunk', 'Chipmunk'], ['balloon', 'Balloon'], ['pinhead', 'Pinhead'], ['alien', 'Alien']]],
-  ['mask3d', '3D', [['none', 'None'], ['shades', 'Shades'], ['crown', 'Crown'], ['halo', 'Halo'], ['orbit', 'Orbit'], ['party', 'Party hat'], ['horns', 'Horns'], ['helmet', 'Space helmet']]],
-  ['colour', 'Colour', [['none', 'None'], ['glow', 'Glow'], ['porcelain', 'Porcelain'], ['vintage', 'Vintage'], ['noir', 'Noir'], ['teal', 'Teal & peach'], ['pop', 'Pop'], ['heat', 'Heat map']]],
-  ['bg', 'Backdrop', [['none', 'None'], ['blur', 'Blur'], ['spot', 'Spotlight'], ['sunset', 'Sunset'], ['stars', 'Night sky'], ['photo', 'Your photo…']]],
-  ['triggers', 'Triggers', Object.entries(TRIGGERS)]
-];
-let tab = store.get('tab', 'sticker');
+const SIMPLE = {
+  sticker:[['none', 'None'], ['pup', 'Pup'], ['cat', 'Cat'], ['bunny', 'Bunny'], ['flowers', 'Flower crown'], ['hearts', 'Heart eyes'], ['gent', 'Gent'], ['rosy', 'Rosy']],
+  paint:[['none', 'None'], ['tiger', 'Tiger'], ['skull', 'Skull'], ['clown', 'Clown'], ['hero', 'Hero mask']],
+  hair:[['none', 'None'], ['pink', 'Pink'], ['blue', 'Blue'], ['purple', 'Purple'], ['green', 'Green'], ['red', 'Red'], ['silver', 'Silver'], ['custom', 'Your colour']],
+  warp:[['none', 'None'], ['bugeyes', 'Bug eyes'], ['tinymouth', 'Tiny mouth'], ['bigmouth', 'Big mouth'], ['bignose', 'Big nose'], ['chipmunk', 'Chipmunk'], ['balloon', 'Balloon'], ['pinhead', 'Pinhead'], ['alien', 'Alien']],
+  mask3d:[['none', 'None'], ['shades', 'Shades'], ['crown', 'Crown'], ['halo', 'Halo'], ['orbit', 'Orbit'], ['party', 'Party hat'], ['horns', 'Horns'], ['helmet', 'Space helmet'], ['viking', 'Viking helmet'], ['antlers', 'Antlers'], ['wizard', 'Wizard hat']],
+  colour:[['none', 'None'], ['glow', 'Glow'], ['porcelain', 'Porcelain'], ['vintage', 'Vintage'], ['noir', 'Noir'], ['teal', 'Teal & peach'], ['pop', 'Pop'], ['heat', 'Heat map']],
+  bg:[['none', 'None'], ['blur', 'Blur'], ['spot', 'Spotlight'], ['sunset', 'Sunset'], ['stars', 'Night sky'], ['photo', 'Your photo…']],
+  fx:[['none', 'None'], ['left', 'Mirror left'], ['right', 'Mirror right'], ['updown', 'Top to bottom'], ['x4', 'Four of you'], ['x9', 'Nine of you'], ['kal', 'Kaleidoscope']],
+  game:[['none', 'None'], ['catch', 'Catch the doughnuts'], ['which', 'Which animal are you?']]
+};
+const TABS = [['face', 'Face swap'], ['sticker', 'Stickers'], ['custom', 'My stickers'], ['makeup', 'Makeup'], ['paint', 'Face paint'], ['hair', 'Hair'], ['warp', 'Warps'], ['mask3d', '3D'], ['colour', 'Colour'], ['bg', 'Backdrop'], ['fx', 'Mirror'], ['triggers', 'Triggers'], ['game', 'Games'], ['cam', 'Camera']];
+const tabOn = cat => cat === 'triggers' || cat === 'makeup' || cat === 'custom' ? sel[cat].length > 0 : cat === 'cam' ? !!(sel.timer || sel.tapRec) : sel[cat] !== 'none';
+let tab = store.get('tab', 'sticker'); if (!TABS.some(t => t[0] === tab)) tab = 'sticker';
 function pick(cat, id, force){
-  if (cat === 'triggers'){ const i = sel.triggers.indexOf(id); if (i < 0) sel.triggers.push(id); else sel.triggers.splice(i, 1); }
+  if (cat === 'triggers' || cat === 'makeup'){ const a = sel[cat], i = a.indexOf(id); if (i < 0) a.push(id); else a.splice(i, 1); }
   else if (cat === 'bg' && id === 'photo' && !force){ $('bgIn').click(); return; }
   else if (cat === 'face' && id === 'add'){ $('faceIn').click(); return; }
-  else if (cat === 'face'){ sel.face = id; if (id !== 'none') loadSkin(); }
-  else sel[cat] = id;
-  if (cat === 'bg' && id !== 'none') loadSegmenter();
+  else { sel[cat] = id; if (cat === 'face' && id !== 'none' && id !== 'swap') ensureSkin(id); if (cat === 'game') resetGame(); }
+  if ((cat === 'bg' || cat === 'hair') && id !== 'none') loadSegmenter();
   store.set('sel', sel); drawMenu();
 }
 function drawMenu(){
   const tabs = $('tabs'), chips = $('chips'); tabs.textContent = ''; chips.textContent = '';
-  for (const [cat, label, items] of MENU){
+  const chip = (label, pressed, fn, img) => { const c = document.createElement('button'); c.className = 'chip'; c.textContent = label; if (img){ const im = new Image(); im.src = img; im.alt = ''; c.prepend(im); } if (pressed != null) c.setAttribute('aria-pressed', !!pressed); c.onclick = fn; chips.appendChild(c); return c; };
+  const act = (label, pressed, fn) => chip(label, pressed, () => { fn(); store.set('sel', sel); drawMenu(); });
+  const colour = (label, key) => { const l = document.createElement('label'); l.className = 'chip'; l.textContent = label; const i = document.createElement('input'); i.type = 'color'; i.value = sel[key]; i.id = 'c_' + key; i.oninput = () => { sel[key] = i.value; store.set('sel', sel); }; l.appendChild(i); chips.appendChild(l); };
+  for (const [cat, label] of TABS){
     const b = document.createElement('button'); b.className = 'tab'; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', cat === tab); b.textContent = label;
-    if (cat === 'triggers' ? sel.triggers.length : sel[cat] !== 'none'){ const d = document.createElement('span'); d.className = 'dot'; b.appendChild(d); }
+    if (tabOn(cat)){ const d = document.createElement('span'); d.className = 'dot'; b.appendChild(d); }
     b.onclick = () => { tab = cat; store.set('tab', tab); drawMenu(); chips.scrollLeft = 0; }; tabs.appendChild(b);
-    if (cat !== tab) continue;
-    for (const [id, name, img] of (typeof items === 'function' ? items() : items)){ const c = document.createElement('button'); c.className = 'chip'; c.textContent = name; if (img){ const im = new Image(); im.src = img; im.alt = ''; c.prepend(im); } c.setAttribute('aria-pressed', cat === 'triggers' ? sel.triggers.includes(id) : sel[cat] === id); c.onclick = () => pick(cat, id); chips.appendChild(c); }
-    if (cat === 'face' && sel.face !== 'none'){
-      const extra = (label, pressed, fn) => { const c = document.createElement('button'); c.className = 'chip'; c.textContent = label; if (pressed != null) c.setAttribute('aria-pressed', pressed); c.onclick = () => { fn(); store.set('sel', sel); drawMenu(); }; chips.appendChild(c); };
-      extra('My own eyes', !!sel.myEyes, () => { sel.myEyes = !sel.myEyes; });
-      extra('Strength: ' + (sel.mix >= 1 ? 'full' : sel.mix > .6 ? 'soft' : 'ghost'), null, () => { sel.mix = sel.mix >= 1 ? .72 : sel.mix > .6 ? .45 : 1; });
-      extra('Delete this face', null, () => { skins = skins.filter(x => x.id !== sel.face); sel.face = 'none'; skin.ready = false; try { localStorage.setItem('gurn.faces', JSON.stringify(skins)); } catch (e) {} });
+  }
+  const cat = tab;
+  if (SIMPLE[cat]){ for (const [id, name] of SIMPLE[cat]) chip(name, sel[cat] === id, () => pick(cat, id)); if (cat === 'hair' && sel.hair === 'custom') colour('Pick colour', 'hairCol'); }
+  else if (cat === 'triggers') for (const [id, name] of Object.entries(TRIGGERS)) chip(name, sel.triggers.includes(id), () => pick(cat, id));
+  else if (cat === 'makeup'){ for (const [id, name] of [['lips', 'Lipstick'], ['liner', 'Eyeliner'], ['shadow', 'Eyeshadow'], ['blush', 'Blush']]) chip(name, sel.makeup.includes(id), () => pick(cat, id));
+    colour('Lip colour', 'lipCol'); colour('Shadow colour', 'shadowCol'); colour('Blush colour', 'blushCol'); }
+  else if (cat === 'face'){
+    chip('None', sel.face === 'none', () => pick('face', 'none')); chip('Swap with each other', sel.face === 'swap', () => pick('face', 'swap')); chip('Add a face…', null, () => pick('face', 'add'));
+    skins.forEach((s, i) => chip('Face ' + (i + 1), sel.face === s.id, () => pick('face', s.id), s.img));
+    if (sel.face !== 'none'){
+      act('My own eyes', sel.myEyes, () => { sel.myEyes = !sel.myEyes; });
+      act('Strength: ' + (sel.mix >= 1 ? 'full' : sel.mix > .6 ? 'soft' : 'ghost'), null, () => { sel.mix = sel.mix >= 1 ? .72 : sel.mix > .6 ? .45 : 1; });
+      act('Match my skin tone', sel.tone, () => { sel.tone = !sel.tone; });
+      if (sel.face !== 'swap'){
+        if (skins.length > 1) for (const p of [1, 2]){ const cur = sel.faceMap[p] || sel.face, n = cur === 'none' ? 'none' : 'Face ' + (skins.findIndex(x => x.id === cur) + 1);
+          act(`Person ${p + 1}: ${n}`, null, () => { const ids = skins.map(x => x.id).concat('none'); sel.faceMap[p] = ids[(ids.indexOf(cur) + 1) % ids.length]; if (sel.faceMap[p] !== 'none') ensureSkin(sel.faceMap[p]); }); }
+        act('Delete this face', null, () => { const id = sel.face; skins = skins.filter(x => x.id !== id); delete skinCache[id]; for (const p in sel.faceMap) if (sel.faceMap[p] === id) delete sel.faceMap[p]; sel.face = 'none'; saveSkins(); });
+      }
     }
   }
+  else if (cat === 'custom'){
+    chip('Add a sticker…', null, () => $('stickIn').click());
+    customs.forEach((s, i) => chip('Sticker ' + (i + 1), sel.custom.includes(s.id), () => { const k = sel.custom.indexOf(s.id); if (k < 0 || editId !== s.id){ if (k < 0) sel.custom.push(s.id); editId = s.id; } else { sel.custom.splice(k, 1); editId = null; } store.set('sel', sel); drawMenu(); }, s.img));
+    const s = customs.find(x => x.id === editId && sel.custom.includes(x.id));
+    if (s){ const tweak = (label, fn) => chip(label, null, () => { fn(); saveCustoms(); drawMenu(); });
+      tweak('Pin: ' + s.pin, () => { const k = Object.keys(PINS); s.pin = k[(k.indexOf(s.pin) + 1) % k.length]; s.dx = s.dy = 0; });
+      tweak('Bigger', () => { s.scale = clamp(s.scale * 1.15, .08, 3); }); tweak('Smaller', () => { s.scale = clamp(s.scale / 1.15, .08, 3); }); tweak('Turn', () => { s.rot += Math.PI / 12; });
+      tweak('Delete', () => { customs = customs.filter(x => x.id !== s.id); sel.custom = sel.custom.filter(x => x !== s.id); editId = null; store.set('sel', sel); }); }
+  }
+  else if (cat === 'cam'){
+    act('Timer: ' + (sel.timer ? sel.timer + 's' : 'off'), sel.timer > 0, () => { sel.timer = sel.timer === 0 ? 3 : sel.timer === 3 ? 10 : 0; });
+    act('Hands-free video', sel.tapRec, () => { sel.tapRec = !sel.tapRec; });
+    chip('Export my filters', null, exportFilters); chip('Import filters', null, () => $('importIn').click());
+    if (installEvt) chip('Install Gurn', null, async () => { installEvt.prompt(); installEvt = null; drawMenu(); });
+  }
+  if (!rec) setHint();
 }
+let installEvt = null; window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (tab === 'cam') drawMenu(); });
 
 /* ================= Debug mode ================= */
 function setDebug(on){ D.on = on; $('panel').hidden = !on; $('dbgCanvas').hidden = !on; $('debugBtn').setAttribute('aria-pressed', on); store.set('debug', on); if (!on) dctx.clearRect(0, 0, dbg.width, dbg.height); }
@@ -851,11 +1124,13 @@ for (const [id, key] of [['dLm', 'lm'], ['dAx', 'ax'], ['dOcc', 'occ'], ['dMask'
 $('dTest').onchange = e => { D.test = e.target.checked; mask.has = false; parts.length = 0; if (D.test){ $('start').hidden = true; $('tray').hidden = false; log('test face on'); } else if (src.kind === 'none'){ $('start').hidden = false; $('tray').hidden = true; } };
 $('dSens').oninput = e => { D.sens = +e.target.value; };
 window.addEventListener('error', e => log('error: ' + e.message)); window.addEventListener('unhandledrejection', e => log('error: ' + (e.reason && e.reason.message || e.reason)));
-window.gurn = { sel, D, pick, perf, testSkin, get faces(){ return faces; } };
+window.gurn = { sel, D, pick, perf, testSkin, testSticker(){ const c = document.createElement('canvas'); c.width = c.height = 200; const x = c.getContext('2d'); x.fillStyle = '#ffd75e'; star(x, 100, 100, 95, 5); x.fill(); const s = { id:'t' + Date.now(), img:c.toDataURL(), pin:'above head', dx:0, dy:0, scale:.5, rot:.2 }; customs.push(s); sel.custom.push(s.id); editId = s.id; drawMenu(); }, get faces(){ return faces; } };
 
 /* ================= Boot ================= */
 if (sel.bg === 'photo') sel.bg = 'none';
-if (!skins.some(x => x.id === sel.face)) sel.face = 'none';
+if (sel.face !== 'swap' && !skins.some(x => x.id === sel.face)) sel.face = 'none';
+sel.custom = sel.custom.filter(id => customs.some(x => x.id === id));
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(e => log('offline support unavailable: ' + e.message));
 try { initGL(); } catch (e) { setStatus('This browser cannot run the filters', true); log(e.message); }
 drawMenu();
 setDebug(location.hash === '#debug' || store.get('debug', false));
