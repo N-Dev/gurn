@@ -1,0 +1,746 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Gurn Face Filters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bagel+Fat+One&family=Figtree:wght@400;600;800&display=swap">
+<style>
+/* Layout: full-bleed camera, controls float over it on scrims; one loud wordmark, quiet controls. */
+:root{
+  --ink:#120e1a; --panel:rgba(22,16,32,.78); --line:rgba(255,255,255,.16);
+  --fg:#f6f1ff; --dim:#bdb2d2; --hot:#ff4f9a; --mint:#62e8cf; --warn:#ffc857;
+  --display:"Bagel Fat One","Arial Rounded MT Bold","Trebuchet MS",sans-serif;
+  --ui:"Figtree",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--ink);color:var(--fg);font:15px/1.4 var(--ui);overflow:hidden;
+  -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+[hidden]{display:none!important}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+button:focus-visible,label:focus-within{outline:2px solid var(--mint);outline-offset:2px}
+#app{position:fixed;inset:0;overflow:hidden}
+#stage{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 20%,#2a1d40,var(--ink))}
+#stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#dbg{pointer-events:none}
+
+.top{z-index:5;position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;
+  padding:calc(10px + env(safe-area-inset-top,0px)) 16px 26px;
+  background:linear-gradient(rgba(10,6,16,.72),transparent)}
+.mark{font:400 26px/1 var(--display);letter-spacing:.01em;color:var(--fg)}
+.mark i{font-style:normal;color:var(--hot)}
+.status{margin-left:auto;font-size:12px;color:var(--dim);padding:5px 10px;border-radius:99px;background:var(--panel);
+  max-width:46vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status.bad{color:var(--warn)}
+.pill{font-weight:600;font-size:13px;padding:7px 12px;border-radius:99px;background:var(--panel);border:1px solid var(--line)}
+.pill[aria-pressed="true"]{background:var(--mint);color:#06231d;border-color:transparent}
+
+.tray{position:absolute;left:0;right:0;bottom:0;display:flex;flex-direction:column;gap:10px;
+  padding:34px 0 calc(14px + env(safe-area-inset-bottom,0px));
+  background:linear-gradient(transparent,rgba(10,6,16,.86) 42%)}
+.row{display:flex;gap:8px;overflow-x:auto;padding:2px 16px;scrollbar-width:none}
+.row::-webkit-scrollbar{display:none}
+.tab{flex:none;font-weight:800;font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);padding:6px 4px;margin-right:10px;
+  border-bottom:2px solid transparent}
+.tab[aria-selected="true"]{color:var(--fg);border-color:var(--hot)}
+.tab .dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--mint);margin-left:5px;vertical-align:middle}
+.chip{flex:none;font-weight:600;padding:9px 15px;border-radius:99px;background:var(--panel);border:1px solid var(--line);white-space:nowrap}
+.chip[aria-pressed="true"]{background:var(--hot);border-color:transparent;color:#2a0616}
+.shoot{display:flex;align-items:center;justify-content:center;gap:34px;padding:4px 16px 0}
+.side{width:48px;height:48px;border-radius:50%;background:var(--panel);border:1px solid var(--line);display:grid;place-items:center}
+.side svg{width:22px;height:22px;stroke:var(--fg);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+#shutter{width:76px;height:76px;border-radius:50%;border:4px solid var(--fg);padding:5px;transition:transform .15s}
+#shutter span{display:block;width:100%;height:100%;border-radius:50%;background:var(--fg);transition:all .18s}
+#shutter.rec{border-color:var(--hot);transform:scale(1.12)}
+#shutter.rec span{background:var(--hot);border-radius:26%;transform:scale(.55)}
+.hint{text-align:center;font-size:12px;color:var(--dim);min-height:17px}
+.hint b{color:var(--hot);font-variant-numeric:tabular-nums}
+
+.cover{position:absolute;inset:0;display:grid;place-items:center;padding:24px 20px;background:rgba(14,9,22,.9);text-align:center}
+.cover .box{max-width:420px;display:flex;flex-direction:column;gap:14px;align-items:center}
+.cover h1{font:400 clamp(64px,22vw,120px)/.86 var(--display);margin:0;color:var(--fg);transform:rotate(-4deg)}
+.cover h1 i{font-style:normal;color:var(--hot)}
+.cover p{margin:0;color:var(--dim);text-wrap:balance}
+.big{font-weight:800;font-size:16px;padding:14px 26px;border-radius:99px;background:var(--hot);color:#2a0616}
+.ghost{font-weight:600;padding:11px 20px;border-radius:99px;border:1px solid var(--line);background:var(--panel)}
+.btns{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+
+#sheet{z-index:8;position:absolute;inset:0;background:rgba(10,6,16,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  padding:calc(16px + env(safe-area-inset-top,0px)) 16px calc(16px + env(safe-area-inset-bottom,0px))}
+#sheet img,#sheet video{max-width:100%;max-height:72%;border-radius:18px;min-height:0}
+
+#panel{z-index:6;position:absolute;left:10px;top:calc(58px + env(safe-area-inset-top,0px));width:min(310px,calc(100% - 20px));max-height:52%;overflow:auto;
+  background:rgba(8,5,14,.84);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font:11px/1.5 var(--mono);color:var(--mint);user-select:text;-webkit-user-select:text}
+#panel pre{margin:0 0 6px;white-space:pre-wrap;font:inherit}
+#panel label{display:flex;align-items:center;gap:6px;color:var(--fg);padding:2px 0}
+#panel input[type=range]{flex:1;min-width:0}
+#panel .log{color:var(--warn);border-top:1px solid var(--line);margin-top:6px;padding-top:6px}
+#toast{z-index:9;position:absolute;left:50%;top:calc(64px + env(safe-area-inset-top,0px));transform:translateX(-50%);background:var(--fg);color:var(--ink);
+  font-weight:600;padding:9px 16px;border-radius:99px;max-width:calc(100% - 32px);text-align:center}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><canvas id="out" aria-label="Camera with filters"></canvas><canvas id="dbg" hidden></canvas></div>
+
+  <div class="top">
+    <div class="mark">Gu<i>r</i>n</div>
+    <div class="status" id="status" role="status">Loading face tracker…</div>
+    <button class="pill" id="debugBtn" aria-pressed="false">Debug</button>
+  </div>
+
+  <div id="panel" hidden>
+    <pre id="stats">waiting for frames…</pre>
+    <label><input type="checkbox" id="dLm" checked> Face points</label>
+    <label><input type="checkbox" id="dAx" checked> Head axes</label>
+    <label><input type="checkbox" id="dOcc"> Show 3D head blocker</label>
+    <label><input type="checkbox" id="dMask"> Show person mask</label>
+    <label><input type="checkbox" id="dInv"> Invert person mask</label>
+    <label><input type="checkbox" id="dTest"> Test face (no camera)</label>
+    <label>Trigger sensitivity <input type="range" id="dSens" min="0" max="1" step="0.05" value="0.5"></label>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="tray" id="tray" hidden>
+    <div class="row" id="tabs" role="tablist"></div>
+    <div class="row" id="chips"></div>
+    <div class="shoot">
+      <label class="side" title="Use a photo instead of the camera"><input type="file" id="photoIn" accept="image/*" hidden>
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17l5-4 4 3 3-2 4 3"/></svg></label>
+      <button id="shutter" aria-label="Tap for photo, hold for video"><span></span></button>
+      <button class="side" id="flip" title="Switch camera" aria-label="Switch camera">
+        <svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0114-3l2 2M20 15a8 8 0 01-14 3l-2-2"/><path d="M20 4v4h-4M4 20v-4h4"/></svg></button>
+    </div>
+    <div class="hint" id="hint">Tap for a photo · hold for video</div>
+  </div>
+
+  <div class="cover" id="start">
+    <div class="box">
+      <h1>Gu<i>r</i>n</h1>
+      <p>Live face filters: stickers, warps, 3D masks, colour looks and backdrops. Stack them, then snap a photo or hold for video.</p>
+      <div class="btns">
+        <button class="big" id="startCam">Turn on camera</button>
+        <label class="ghost">Use a photo<input type="file" id="photoIn2" accept="image/*" hidden></label>
+      </div>
+      <p id="startNote" style="font-size:12px">Everything runs on this device. Your camera feed is never uploaded.</p>
+    </div>
+  </div>
+
+  <div id="sheet" hidden>
+    <img id="shotImg" alt="Your photo" hidden><video id="shotVid" controls playsinline loop hidden></video>
+    <div class="btns">
+      <button class="big" id="save">Save</button>
+      <button class="ghost" id="share" hidden>Share</button>
+      <button class="ghost" id="discard">Discard</button>
+    </div>
+  </div>
+  <div id="toast" hidden></div>
+  <input type="file" id="bgIn" accept="image/*" hidden>
+  <video id="cam" playsinline muted hidden></video>
+</div>
+
+<script>
+'use strict';
+/* ================= Config ================= */
+const MP_VER = '0.10.14';
+const MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VER;
+const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const SEG_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+const MAX_FACES = 4;
+
+const $ = id => document.getElementById(id);
+const out = $('out'), octx = out.getContext('2d'), dbg = $('dbg'), dctx = dbg.getContext('2d'), cam = $('cam');
+const glc = document.createElement('canvas');
+const gl = glc.getContext('webgl2', {alpha:false, depth:true, antialias:true, premultipliedAlpha:false});
+
+/* ================= Small helpers ================= */
+const logs = [];
+function log(msg){ logs.push(new Date().toLocaleTimeString() + ' ' + msg); if (logs.length > 10) logs.shift(); $('log').textContent = logs.join('\n'); $('log').style.whiteSpace = 'pre-wrap'; console.log('[gurn]', msg); }
+function setStatus(t, bad){ const s = $('status'); s.textContent = t; s.classList.toggle('bad', !!bad); s.title = t; }
+let toastT; function toast(t){ const e = $('toast'); e.textContent = t; e.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => e.hidden = true, 3200); }
+const store = { get(k, d){ try { const v = localStorage.getItem('gurn.' + k); return v == null ? d : JSON.parse(v); } catch(e){ return d; } }, set(k, v){ try { localStorage.setItem('gurn.' + k, JSON.stringify(v)); } catch(e){} } };
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]], add = (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]];
+const mul = (a, k) => [a[0]*k, a[1]*k, a[2]*k], dot = (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const len = a => Math.hypot(a[0], a[1], a[2]), norm = a => mul(a, 1 / (len(a) || 1)), mid = (a, b) => mul(add(a, b), .5);
+
+/* 4x4 matrices, column-major */
+const M = {
+  id: () => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+  mul(a, b){ const o = new Float32Array(16); for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) o[c*4+r] = a[r]*b[c*4] + a[4+r]*b[c*4+1] + a[8+r]*b[c*4+2] + a[12+r]*b[c*4+3]; return o; },
+  T: (x, y, z) => new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]),
+  S: (x, y, z) => new Float32Array([x,0,0,0, 0,y,0,0, 0,0,z,0, 0,0,0,1]),
+  RX(a){ const c = Math.cos(a), s = Math.sin(a); return new Float32Array([1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]); },
+  RY(a){ const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]); },
+  RZ(a){ const c = Math.cos(a), s = Math.sin(a); return new Float32Array([c,s,0,0, -s,c,0,0, 0,0,1,0, 0,0,0,1]); },
+  chain(...ms){ return ms.reduce((a, b) => M.mul(a, b)); }
+};
+
+/* ================= State ================= */
+const sel = Object.assign({sticker:'none', warp:'none', mask3d:'none', colour:'none', bg:'none', triggers:[]}, store.get('sel', {}));
+const D = { on:false, lm:true, ax:true, occ:false, mask:false, inv:false, test:false, sens:.5 };
+const src = { el:null, w:0, h:0, mirror:false, kind:'none', ready:false };
+let facing = 'user', stream = null;
+let faces = [], time = 0;
+const perf = { fps:0, faceMs:0, segMs:0, frames:0, last:performance.now(), delegate:'-', segDelegate:'-' };
+
+/* ================= Face tracking (MediaPipe) ================= */
+let vision = null, mpFiles = null, faceLm = null, segmenter = null, segLoading = false;
+async function loadTracker(){
+  try {
+    vision = await import(MP_BASE + '/vision_bundle.mjs');
+    const files = await vision.FilesetResolver.forVisionTasks(MP_BASE + '/wasm');
+    mpFiles = files;
+    const mk = d => vision.FaceLandmarker.createFromOptions(files, { baseOptions:{modelAssetPath:FACE_MODEL, delegate:d}, runningMode:'VIDEO', numFaces:MAX_FACES, outputFaceBlendshapes:true });
+    try { faceLm = await mk('GPU'); perf.delegate = 'GPU'; }
+    catch (e) { log('GPU face tracker failed, using CPU: ' + e.message); faceLm = await mk('CPU'); perf.delegate = 'CPU'; }
+    setStatus('Face tracker ready'); log('face tracker ready (' + perf.delegate + ')');
+    if (sel.bg !== 'none') loadSegmenter();
+  } catch (e) {
+    setStatus('Face tracker could not load', true);
+    log('tracker load failed: ' + (e && e.message || e));
+    toast('Face tracker could not load. Check your connection and reload.');
+  }
+}
+async function loadSegmenter(){
+  if (segmenter || segLoading || !vision) return;
+  segLoading = true; setStatus('Loading backdrop model…');
+  try {
+    const mk = d => vision.ImageSegmenter.createFromOptions(mpFiles, { baseOptions:{modelAssetPath:SEG_MODEL, delegate:d}, runningMode:'VIDEO', outputCategoryMask:false, outputConfidenceMasks:true });
+    try { segmenter = await mk('GPU'); perf.segDelegate = 'GPU'; }
+    catch (e) { log('GPU backdrop model failed, using CPU: ' + e.message); segmenter = await mk('CPU'); perf.segDelegate = 'CPU'; }
+    setStatus('Face tracker ready'); log('backdrop model ready (' + perf.segDelegate + ')');
+  } catch (e) { setStatus('Backdrop model could not load', true); log('segmenter load failed: ' + (e && e.message || e)); }
+  segLoading = false;
+}
+
+/* Build a face frame in screen space: x right (px), y down (px), z toward the viewer (px). */
+function buildFace(lm, bsCats, W, H, mirror){
+  const P = i => { const p = lm[i]; return [(mirror ? 1 - p.x : p.x) * W, p.y * H, -p.z * W]; };
+  const a = P(234), b = P(454);
+  let X = sub(b, a); if (mirror) X = mul(X, -1);
+  const s = len(X) || 1; X = mul(X, 1 / s);
+  let Y = norm(sub(P(10), P(152)));
+  const Z = norm(cross(Y, X)); Y = cross(X, Z);
+  const O = mid(a, b);
+  const L = i => { const d = sub(P(i), O); return [dot(d, X) / s, dot(d, Y) / s, dot(d, Z) / s]; };
+  const bs = {}; if (bsCats) for (const c of bsCats) bs[c.categoryName] = c.score;
+  const f = { lm, P, L, O, X, Y, Z, s, bs, W, H };
+  if (bs.jawOpen == null) bs.jawOpen = clamp(len(sub(P(13), P(14))) / s / .22, 0, 1);
+  f.eyeL = mid(P(33), P(133)); f.eyeR = mid(P(263), P(362)); f.mouth = mid(P(13), P(14));
+  f.yaw = Math.asin(clamp(Z[0], -1, 1)); f.pitch = Math.asin(clamp(-Z[1], -1, 1)); f.roll = Math.atan2(X[1], X[0]);
+  return f;
+}
+let lastTs = 0;
+function detect(now){
+  if (D.test) return testFaces();
+  if (!faceLm) return [];
+  const ts = Math.max(now, lastTs + 1); lastTs = ts;
+  const t0 = performance.now();
+  let res; try { res = faceLm.detectForVideo(src.el, ts); } catch (e) { if (!detect.err) { detect.err = 1; log('detect error: ' + e.message); } return faces; }
+  perf.faceMs += (performance.now() - t0 - perf.faceMs) * .1;
+  const o = [];
+  (res.faceLandmarks || []).forEach((lm, i) => { if (lm.length > 460) o.push(buildFace(lm, res.faceBlendshapes && res.faceBlendshapes[i] && res.faceBlendshapes[i].categories, src.w, src.h, src.mirror)); });
+  return o;
+}
+
+/* ================= Test face (debug): a drawn dummy head with matching points ================= */
+const testC = document.createElement('canvas'); testC.width = 960; testC.height = 720; const tctx = testC.getContext('2d');
+const maskC = document.createElement('canvas'); maskC.width = maskC.height = 256; const mctx = maskC.getContext('2d', {willReadFrequently:true});
+const HEAD = { 234:[-.5,0,0], 454:[.5,0,0], 10:[0,.55,.32], 152:[0,-.62,.3], 1:[0,-.08,.52], 2:[0,-.15,.45], 168:[0,.12,.4],
+  33:[-.31,.1,.3], 133:[-.11,.1,.35], 362:[.11,.1,.35], 263:[.31,.1,.3], 468:[-.21,.1,.34], 473:[.21,.1,.34],
+  13:[0,-.3,.42], 14:[0,-.3,.42], 0:[0,-.26,.44], 17:[0,-.4,.42], 61:[-.17,-.31,.36], 291:[.17,-.31,.36],
+  50:[-.3,-.12,.33], 280:[.3,-.12,.33], 54:[-.36,.42,.2], 284:[.36,.42,.2], 67:[-.2,.52,.3], 297:[.2,.52,.3],
+  103:[-.29,.49,.25], 332:[.29,.49,.25], 109:[-.1,.55,.31], 338:[.1,.55,.31], 105:[-.22,.22,.36], 334:[.22,.22,.36] };
+function fakeLm(cx, cy, size, yaw, pitch, roll, open){
+  const W = testC.width, H = testC.height, R = M.chain(M.RZ(roll), M.RY(yaw), M.RX(pitch));
+  const proj = p => { const x = R[0]*p[0] + R[4]*p[1] + R[8]*p[2], y = R[1]*p[0] + R[5]*p[1] + R[9]*p[2], z = R[2]*p[0] + R[6]*p[1] + R[10]*p[2];
+    return { x:(cx + size*x) / W, y:(cy - size*y) / H, z:-(size*z) / W }; };
+  const lm = new Array(478), c = proj([0, 0, .3]);
+  for (let i = 0; i < 478; i++) lm[i] = c;
+  for (const k in HEAD){ const p = HEAD[k].slice(); if (k === '14' || k === '17') p[1] -= open * .16; if (k === '152') p[1] -= open * .1; lm[k] = proj(p); }
+  return lm;
+}
+function testFaces(){
+  const W = testC.width, H = testC.height, t = time, c = tctx;
+  c.fillStyle = '#31506b'; c.fillRect(0, 0, W, H);
+  for (let y = 0; y < H; y += 60) for (let x = 0; x < W; x += 60){ c.fillStyle = ((x + y) / 60) % 2 ? '#3d6787' : '#2a4760'; c.fillRect(x, y, 60, 60); }
+  c.fillStyle = '#e9b44c'; c.beginPath(); c.arc(820, 110, 60, 0, 7); c.fill();
+  c.fillStyle = '#6fbf73'; c.fillRect(0, H - 90, W, 90);
+  const cyc = (t * .25) % 4, bsFor = k => ({ jawOpen: k === 0 ? clamp(Math.sin(t * 1.4) * .9, 0, 1) : .05, browInnerUp: cyc > 1 && cyc < 1.6 ? .9 : .05,
+    eyeBlinkLeft: cyc > 2 && cyc < 2.5 ? .9 : .05, eyeBlinkRight:.05, mouthPucker: cyc > 3 && cyc < 3.7 ? .9 : .05 });
+  const defs = [ [W * .4, H * .5, 250, Math.sin(t * .7) * .55, Math.sin(t * .5) * .15, Math.sin(t * .9) * .2], [W * .8, H * .62, 130, Math.sin(t * .6 + 2) * .4, 0, -.15] ];
+  mctx.fillStyle = '#000'; mctx.fillRect(0, 0, 256, 256); mctx.fillStyle = '#fff';
+  const res = [];
+  defs.forEach((d, k) => {
+    const bs = bsFor(k), lm = fakeLm(d[0], d[1], d[2], d[3], d[4], d[5], bs.jawOpen);
+    const px = i => [lm[i].x * W, lm[i].y * H], s = d[2], o = mid([...px(234), 0], [...px(454), 0]);
+    c.fillStyle = '#5a4a78'; c.beginPath(); c.ellipse(o[0], o[1] + s * 1.25, s * .8, s * .6, 0, 0, 7); c.fill();
+    c.save(); c.translate(o[0], o[1]); c.rotate(-d[5]);
+    c.fillStyle = '#c9b6e8'; c.beginPath(); c.ellipse(0, -s * .05, s * .5, s * .68, 0, 0, 7); c.fill(); c.restore();
+    c.fillStyle = '#2b2140'; for (const i of [468, 473]){ const p = px(i); c.beginPath(); c.ellipse(p[0], p[1], s * .06, s * .045 * (i === 468 ? 1 - bs.eyeBlinkLeft * .9 : 1), 0, 0, 7); c.fill(); }
+    c.fillStyle = '#a995cf'; { const p = px(1); c.beginPath(); c.arc(p[0], p[1], s * .06, 0, 7); c.fill(); }
+    { const a = px(13), b = px(14), l = px(61), r = px(291); c.fillStyle = '#7a2948'; c.beginPath(); c.ellipse((a[0]+b[0])/2, (a[1]+b[1])/2, Math.hypot(r[0]-l[0], r[1]-l[1]) / 2 * (1 - bs.mouthPucker * .5), Math.max(s * .02, Math.hypot(b[0]-a[0], b[1]-a[1]) / 2), -d[5], 0, 7); c.fill(); }
+    mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] - s * .05) / H * 256, s * .52 / W * 256, s * .7 / H * 256, 0, 0, 7); mctx.fill();
+    mctx.beginPath(); mctx.ellipse(o[0] / W * 256, (o[1] + s * 1.25) / H * 256, s * .8 / W * 256, s * .6 / H * 256, 0, 0, 7); mctx.fill();
+    res.push(buildFace(lm, Object.keys(bs).map(n => ({categoryName:n, score:bs[n]})), W, H, false));
+  });
+  if (bgActive()){ const d = mctx.getImageData(0, 0, 256, 256).data; if (!mask.data || mask.data.length !== 65536) mask.data = new Uint8Array(65536); for (let i = 0; i < 65536; i++) mask.data[i] = d[i * 4]; mask.w = mask.h = 256; mask.fresh = true; mask.has = true; }
+  return res;
+}
+
+/* ================= Person mask (backdrops) ================= */
+const mask = { data:null, w:0, h:0, fresh:false, has:false };
+const bgActive = () => sel.bg !== 'none' || D.mask;
+function segment(now){
+  if (D.test) return;
+  if (!bgActive()){ mask.has = false; return; }
+  if (!segmenter){ loadSegmenter(); return; }
+  const t0 = performance.now();
+  try {
+    segmenter.segmentForVideo(src.el, Math.max(now, lastTs), r => {
+      const ms = r.confidenceMasks; if (!ms || !ms.length) return;
+      const m = ms[ms.length - 1], f = m.getAsFloat32Array(), n = f.length;
+      if (!mask.data || mask.data.length !== n) mask.data = new Uint8Array(n);
+      for (let i = 0; i < n; i++) mask.data[i] = f[i] * 255;
+      mask.w = m.width; mask.h = m.height; mask.fresh = true; mask.has = true; perf.masks = ms.length;
+    });
+  } catch (e) { if (!segment.err) { segment.err = 1; log('segment error: ' + e.message); } }
+  perf.segMs += (performance.now() - t0 - perf.segMs) * .1;
+}
+
+/* ================= WebGL: programs ================= */
+function prog(vs, fs){
+  const mk = (t, s) => { const sh = gl.createShader(t); gl.shaderSource(sh, s); gl.compileShader(sh); if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) { const m = gl.getShaderInfoLog(sh); log('shader: ' + m); throw new Error(m); } return sh; };
+  const p = gl.createProgram(); gl.attachShader(p, mk(gl.VERTEX_SHADER, vs)); gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {}; return { p, u: n => (n in u ? u[n] : (u[n] = gl.getUniformLocation(p, n))) };
+}
+const BG_VS = `#version 300 es
+in vec2 aP; out vec2 vUv; void main(){ vUv = vec2(aP.x*.5+.5, .5-aP.y*.5); gl_Position = vec4(aP,0.,1.); }`;
+const BG_FS = `#version 300 es
+precision highp float;
+in vec2 vUv; out vec4 o;
+uniform sampler2D tV, tM, tB;
+uniform vec3 uRes; uniform float uMirror, uTime;
+uniform int uNW; uniform vec4 uW[16];
+uniform int uNF; uniform vec4 uF[4]; uniform vec3 uE[12];
+uniform float uSmooth, uHasMask, uInv, uBgAsp, uShowMask;
+uniform int uBg, uFx;
+uniform float uBright, uContrast, uSat, uFade, uVig, uGrain; uniform vec3 uTint;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
+vec2 suv(vec2 p){ vec2 uv = p/uRes.xy; uv.x = mix(uv.x, 1.-uv.x, uMirror); return uv; }
+vec3 vid(vec2 p){ return texture(tV, suv(p)).rgb; }
+vec3 backdrop(vec2 uv, vec2 p){
+  if (uBg == 1){ vec3 a = vec3(0.); for (int i=0;i<16;i++){ float f = float(i); float r = sqrt((f+.5)/16.)*uRes.y*.035; float t = f*2.39996; a += vid(p + r*vec2(cos(t),sin(t))); } return a/16.; }
+  if (uBg == 2){ vec3 c = vid(p); float l = dot(c, vec3(.299,.587,.114)); return mix(vec3(l), c, .25)*.28; }
+  if (uBg == 3){ vec3 c = mix(vec3(.16,.09,.36), vec3(1.,.45,.38), smoothstep(.0,.75,uv.y)); c = mix(c, vec3(1.,.82,.45), smoothstep(.6,1.,uv.y));
+    float d = length((uv-vec2(.5,.72))*vec2(uRes.x/uRes.y,1.)); c = mix(c, vec3(1.,.93,.7), smoothstep(.2,.18,d)); return c; }
+  if (uBg == 4){ vec3 c = mix(vec3(.02,.02,.09), vec3(.13,.05,.25), uv.y); vec2 g = uv*vec2(uRes.x/uRes.y,1.)*38.; vec2 id = floor(g), f = fract(g)-.5;
+    float h = hash(id); vec2 off = (vec2(hash(id+3.1),hash(id+7.7))-.5)*.7; float tw = .6+.4*sin(uTime*(1.+h*3.)+h*40.);
+    c += step(.72,h)*tw*smoothstep(.09*h,.0,length(f-off)); return c; }
+  if (uBg == 5){ float a = uRes.x/uRes.y; vec2 c = uv-.5; if (a > uBgAsp) c.y *= uBgAsp/a; else c.x *= a/uBgAsp; return texture(tB, c+.5).rgb; }
+  return vid(p);
+}
+void main(){
+  vec2 p0 = vUv*uRes.xy, off = vec2(0.);
+  for (int i=0;i<16;i++){ if (i>=uNW) break; vec2 d = p0-uW[i].xy; float r = length(d)/uW[i].z; if (r<1.){ float w = 1.-r*r; w*=w; off -= d*uW[i].w*w; } }
+  vec2 p = p0+off;
+  vec3 c = vid(p);
+  if (uSmooth > 0.){
+    float m = 0., rad = 0.;
+    for (int i=0;i<4;i++){ if (i>=uNF) break; vec2 d = (p-uF[i].xy)/uF[i].zw; float k = 1.-smoothstep(.75,1.,length(d));
+      for (int j=0;j<3;j++){ vec3 e = uE[i*3+j]; k *= smoothstep(.8,1.2,length(p-e.xy)/e.z); }
+      if (k>m){ m=k; rad=uF[i].z*.05; } }
+    if (m > 0.){ vec3 b = vec3(0.); for (int i=0;i<10;i++){ float t = float(i)*2.39996; float r = rad*sqrt((float(i)+.5)/10.); b += vid(p + r*vec2(cos(t),sin(t))); } b /= 10.;
+      float keep = smoothstep(.04,.14,length(c-b)); c = mix(c, b, uSmooth*m*(1.-keep)); }
+  }
+  float pm = 1.;
+  if (uHasMask > .5){ pm = texture(tM, suv(p)).r; pm = mix(pm, 1.-pm, uInv); pm = smoothstep(.3,.62,pm); if (uBg > 0) c = mix(backdrop(vUv, p), c, pm); }
+  c *= uBright; c = (c-.5)*uContrast+.5; float l = dot(c, vec3(.299,.587,.114)); c = mix(vec3(l), c, uSat); c *= uTint; c = mix(c, c*.82+.13, uFade);
+  if (uFx == 1){ float t = clamp(l,0.,1.); c = t<.33 ? mix(vec3(.05,.0,.3), vec3(.75,.0,.55), t/.33) : t<.66 ? mix(vec3(.75,.0,.55), vec3(1.,.55,.0), (t-.33)/.33) : mix(vec3(1.,.55,.0), vec3(1.,1.,.75), (t-.66)/.34); }
+  if (uFx == 2) c += mix(vec3(-.05,.03,.07), vec3(.08,.02,-.06), clamp(l,0.,1.));
+  c *= 1.-uVig*smoothstep(.3,.85,length(vUv-.5));
+  c += (hash(p0+uTime*61.)-.5)*uGrain;
+  if (uShowMask > .5) c = mix(c, vec3(0.,1.,.6), pm*.5*uHasMask);
+  o = vec4(clamp(c,0.,1.),1.);
+}`;
+const MESH_VS = `#version 300 es
+in vec3 aP; in vec3 aN; uniform mat4 uM; uniform vec3 uO,uX,uY,uZ,uRes; uniform float uS; out vec3 vN;
+void main(){ vec4 l = uM*vec4(aP,1.); vec3 w = uO + uS*(uX*l.x+uY*l.y+uZ*l.z); vec3 n = mat3(uM)*aN; vN = uX*n.x+uY*n.y+uZ*n.z;
+  gl_Position = vec4(2.*w.x/uRes.x-1., 1.-2.*w.y/uRes.y, -w.z/uRes.z, 1.); }`;
+const MESH_FS = `#version 300 es
+precision highp float; in vec3 vN; out vec4 o; uniform vec4 uC; uniform float uEmis, uShine, uGlass;
+void main(){ vec3 n = normalize(vN); if (n.z<0.) n=-n; vec3 L = normalize(vec3(-.35,-.6,.72));
+  float d = max(dot(n,L),0.); float s = pow(max(reflect(-L,n).z,0.),36.)*uShine;
+  vec3 c = uC.rgb*(.36+.78*d) + s + uC.rgb*uEmis; float a = uC.a; if (uGlass>.5) a = mix(uC.a,.8,pow(1.-n.z,3.)) + s;
+  o = vec4(c, clamp(a,0.,1.)); }`;
+
+let bgP, meshP, quad, texV, texM, texB, bgAsp = 1, hasBg = false;
+function initGL(){
+  if (!gl) throw new Error('WebGL2 is not available in this browser');
+  bgP = prog(BG_VS, BG_FS); meshP = prog(MESH_VS, MESH_FS);
+  quad = gl.createVertexArray(); gl.bindVertexArray(quad);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(bgP.p, 'aP'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const mkTex = () => { const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t); for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255])); return t; };
+  texV = mkTex(); texM = mkTex(); texB = mkTex();
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+}
+
+/* ---- geometry ---- */
+const geoCache = {};
+function geo(key, build){
+  if (geoCache[key]) return geoCache[key];
+  const g = build(), vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  const buf = (data, name) => { gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW); const l = gl.getAttribLocation(meshP.p, name); if (l >= 0) { gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 3, gl.FLOAT, false, 0, 0); } };
+  buf(g.p, 'aP'); buf(g.n, 'aN');
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, gl.createBuffer()); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(g.i), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return geoCache[key] = { vao, count: g.i.length };
+}
+function grid(nu, nv, fn){ const p = [], n = [], i = []; for (let v = 0; v <= nv; v++) for (let u = 0; u <= nu; u++){ const r = fn(u / nu, v / nv); p.push(...r[0]); n.push(...r[1]); }
+  for (let v = 0; v < nv; v++) for (let u = 0; u < nu; u++){ const a = v * (nu + 1) + u, b = a + nu + 1; i.push(a, b, a + 1, a + 1, b, b + 1); } return { p, n, i }; }
+const G = {
+  sphere: () => geo('sph', () => grid(28, 18, (u, v) => { const a = u * 6.28318, b = v * 3.14159, q = [Math.sin(b) * Math.cos(a), Math.cos(b), Math.sin(b) * Math.sin(a)]; return [q, q]; })),
+  torus: (R, r) => geo('tor' + R + '_' + r, () => grid(56, 12, (u, v) => { const a = u * 6.28318, b = v * 6.28318, cb = Math.cos(b), sb = Math.sin(b); return [[(R + r * cb) * Math.cos(a), r * sb, (R + r * cb) * Math.sin(a)], [cb * Math.cos(a), sb, cb * Math.sin(a)]]; })),
+  /* cylinder / cone along Y, height 1, radius rt at top and rb at bottom, with caps */
+  cyl: (rt, rb) => geo('cyl' + rt + '_' + rb, () => { const g = grid(32, 1, (u, v) => { const a = u * 6.28318, r = rt + (rb - rt) * v, nn = norm([Math.cos(a), rb - rt, Math.sin(a)]); return [[r * Math.cos(a), .5 - v, r * Math.sin(a)], nn]; });
+    for (const [y, r, ny] of [[.5, rt, 1], [-.5, rb, -1]]){ if (r <= 0) continue; const c = g.p.length / 3; g.p.push(0, y, 0); g.n.push(0, ny, 0); for (let k = 0; k <= 32; k++){ const a = k / 32 * 6.28318; g.p.push(r * Math.cos(a), y, r * Math.sin(a)); g.n.push(0, ny, 0); if (k) g.i.push(c, c + k, c + k + 1); } }
+    return g; }),
+  box: () => geo('box', () => { const p = [], n = [], i = []; const fs = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+    for (const f of fs){ const a = [f[1], f[2], f[0]], b = cross(f, a), c = p.length / 3; for (const [s, t] of [[-1,-1],[1,-1],[1,1],[-1,1]]){ p.push(...mul(add(add(f, mul(a, s)), mul(b, t)), .5)); n.push(...f); } i.push(c, c+1, c+2, c, c+2, c+3); } return { p, n, i }; })
+};
+const part = (g, m, c, o) => Object.assign({ g, m, c, emis:0, shine:.5, glass:0 }, o);
+const hex = (h, a = 1) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255, a];
+
+/* ---- 3D masks: parts in head units (1 = face width; x right, y up, z out of the face) ---- */
+const MASKS3D = {
+  halo: (f, t) => { const top = f.L(10); return [part(G.torus(.4, .035), M.chain(M.T(0, top[1] + .34 + Math.sin(t * 2) * .02, -.05), M.RX(.22)), hex(0xffd75e), {emis:.55, shine:1})]; },
+  orbit: (f, t) => { const base = M.chain(M.T(0, .08, -.05), M.RZ(.28), M.RX(.16)); const ps = [part(G.torus(.95, .01), base, hex(0xd9d0ff), {emis:.5})];
+    [[0, .1, 0xff7a59], [2.2, .065, 0x62e8cf], [4.1, .05, 0xffd75e]].forEach(([ph, r, col], k) => { const a = t * (1.1 + k * .25) + ph; ps.push(part(G.sphere(), M.chain(base, M.T(Math.cos(a) * .95, 0, Math.sin(a) * .95), M.S(r, r, r)), hex(col), {shine:.8})); });
+    const a = t * 1.1; ps.push(part(G.torus(.15, .012), M.chain(base, M.T(Math.cos(a) * .95, 0, Math.sin(a) * .95), M.RX(.5)), hex(0xffe3d6), {emis:.3})); return ps; },
+  shades: f => { const e = mul(add(f.L(33), f.L(263)), .5), z = Math.max(f.L(33)[2], f.L(263)[2]) + .09, ps = [];
+    for (const sx of [-1, 1]){ ps.push(part(G.cyl(.165, .165), M.chain(M.T(e[0] + sx * .215, e[1] - .015, z), M.RX(1.5708), M.S(1, .02, 1)), hex(0x1b1230), {shine:1.6}));
+      ps.push(part(G.torus(.165, .02), M.chain(M.T(e[0] + sx * .215, e[1] - .015, z), M.RX(1.5708)), hex(0xff4f9a), {shine:1}));
+      ps.push(part(G.box(), M.chain(M.T(e[0] + sx * .455, e[1] + .02, z - .27), M.RY(sx * -.14), M.S(.022, .035, .56)), hex(0xff4f9a), {shine:1})); }
+    ps.push(part(G.box(), M.chain(M.T(e[0], e[1] + .03, z), M.S(.11, .03, .025)), hex(0xff4f9a), {shine:1})); return ps; },
+  crown: f => { const top = f.L(10), base = M.chain(M.T(0, top[1] + .2, -.08), M.RX(-.1)), ps = [part(G.cyl(.43, .4), M.chain(base, M.S(1, .16, 1)), hex(0xf2b736), {shine:1.3, emis:.15})];
+    for (let k = 0; k < 9; k++){ const a = k / 9 * 6.28318 + 1.5708; ps.push(part(G.cyl(0, .075), M.chain(base, M.T(Math.cos(a) * .415, .19, Math.sin(a) * .415), M.S(1, .24, 1)), hex(0xf2b736), {shine:1.3, emis:.15}));
+      ps.push(part(G.sphere(), M.chain(base, M.T(Math.cos(a) * .44, 0, Math.sin(a) * .44), M.S(.04, .04, .04)), hex(k % 2 ? 0xff4f9a : 0x62e8cf), {shine:2, emis:.3})); }
+    return ps; },
+  party: (f, t) => { const top = f.L(10), base = M.chain(M.T(.1, top[1] + .2, -.02), M.RZ(-.22), M.RX(-.08));
+    const ps = [part(G.cyl(0, .23), M.chain(base, M.T(0, .3, 0), M.S(1, .6, 1)), hex(0x7b5cff), {shine:.8}), part(G.torus(.23, .03), base, hex(0xffd75e), {shine:.6}),
+      part(G.sphere(), M.chain(base, M.T(0, .62, 0), M.S(.07, .07, .07)), hex(0xff4f9a), {emis:.3})];
+    for (let k = 0; k < 3; k++){ const y = .14 + k * .14, r = .23 * (1 - y / .6); ps.push(part(G.torus(1, .09), M.chain(base, M.T(0, y, 0), M.S(r, .2, r)), hex(0x62e8cf), {shine:.6})); } return ps; },
+  horns: f => { const top = f.L(10), ps = []; for (const sx of [-1, 1]){ const b = M.chain(M.T(sx * .27, top[1] + .02, .12), M.RZ(sx * -.5), M.RX(-.15));
+      ps.push(part(G.cyl(.055, .1), M.chain(b, M.T(0, .1, 0), M.S(1, .2, 1)), hex(0xd4233f), {shine:1.4}));
+      ps.push(part(G.cyl(0, .055), M.chain(b, M.T(sx * -.035, .29, 0), M.RZ(sx * .35), M.S(1, .2, 1)), hex(0xf04a5c), {shine:1.4})); } return ps; },
+  helmet: f => [part(G.torus(.62, .09), M.chain(M.T(0, -.78, -.12), M.RX(.12)), hex(0xe8ecf5), {shine:1}),
+    part(G.sphere(), M.chain(M.T(0, .1, -.1), M.S(1, 1.02, 1)), hex(0xa9d8ff, .13), {shine:2.2, glass:1})]
+};
+const OCCLUDER = () => part(G.sphere(), M.chain(M.T(0, .1, -.2), M.S(.47, .68, .5)), hex(0x00ff99, .45));
+
+/* ---- warps: [landmark or fn, radius, strength] in head units; + magnifies, - shrinks ---- */
+const WARPS = {
+  bugeyes: f => [[f.eyeL, .25, .55], [f.eyeR, .25, .55]],
+  tinymouth: f => [[f.mouth, .3, -.9]],
+  bigmouth: f => [[f.mouth, .36, .5]],
+  bignose: f => [[f.P(1), .24, .6]],
+  chipmunk: f => [[f.P(50), .3, .5], [f.P(280), .3, .5]],
+  balloon: f => [[f.P(168), 1.0, .5]],
+  pinhead: f => [[f.P(168), 1.05, -.9]],
+  alien: f => [[f.eyeL, .3, .5], [f.eyeR, .3, .5], [f.P(152), .45, -.9], [f.P(10), .5, .35]]
+};
+const COLOURS = {
+  none:{}, glow:{smooth:.85, bright:1.06, contrast:.97, sat:1.06, tint:[1.03, 1, .97]}, porcelain:{smooth:1, bright:1.1, contrast:.95, sat:.84, tint:[.98, 1, 1.03], fade:.15},
+  vintage:{sat:.55, tint:[1.1, 1, .82], fade:.35, vig:.5, grain:.09, contrast:1.05}, noir:{sat:0, contrast:1.35, vig:.6, grain:.06},
+  teal:{fx:2, sat:1.1, contrast:1.08}, pop:{sat:1.6, contrast:1.15}, heat:{fx:1}
+};
+const BGS = { none:0, blur:1, spot:2, sunset:3, stars:4, photo:5 };
+
+function renderGL(){
+  const W = src.w, H = src.h, Dp = Math.max(W, H) * 4;
+  if (glc.width !== W || glc.height !== H){ glc.width = W; glc.height = H; }
+  gl.viewport(0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texV);
+  try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src.el); } catch (e) { if (!renderGL.err){ renderGL.err = 1; log('frame upload failed: ' + e.message); } }
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texM);
+  if (mask.fresh){ gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, mask.w, mask.h, 0, gl.RED, gl.UNSIGNED_BYTE, mask.data); mask.fresh = false; }
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB);
+
+  const b = bgP, u = b.u; gl.useProgram(b.p);
+  gl.uniform1i(u('tV'), 0); gl.uniform1i(u('tM'), 1); gl.uniform1i(u('tB'), 2);
+  gl.uniform3f(u('uRes'), W, H, Dp); gl.uniform1f(u('uMirror'), src.mirror ? 1 : 0); gl.uniform1f(u('uTime'), time % 1000);
+  const warps = [], F = [], E = [];
+  faces.slice(0, MAX_FACES).forEach(f => {
+    if (WARPS[sel.warp]) for (const w of WARPS[sel.warp](f)) if (warps.length < 64) warps.push(w[0][0], w[0][1], w[1] * f.s, w[2]);
+    const c = f.P(168); F.push(c[0], c[1] - f.s * .05, f.s * .56, f.s * .74);
+    E.push(f.eyeL[0], f.eyeL[1], f.s * .13, f.eyeR[0], f.eyeR[1], f.s * .13, f.mouth[0], f.mouth[1], f.s * .19);
+  });
+  gl.uniform1i(u('uNW'), warps.length / 4); if (warps.length) gl.uniform4fv(u('uW[0]'), new Float32Array(warps));
+  gl.uniform1i(u('uNF'), F.length / 4); if (F.length){ gl.uniform4fv(u('uF[0]'), new Float32Array(F)); gl.uniform3fv(u('uE[0]'), new Float32Array(E)); }
+  const c = COLOURS[sel.colour] || {};
+  gl.uniform1f(u('uSmooth'), c.smooth || 0); gl.uniform1f(u('uBright'), c.bright || 1); gl.uniform1f(u('uContrast'), c.contrast || 1);
+  gl.uniform1f(u('uSat'), c.sat == null ? 1 : c.sat); gl.uniform1f(u('uFade'), c.fade || 0); gl.uniform1f(u('uVig'), c.vig || 0); gl.uniform1f(u('uGrain'), c.grain || 0);
+  gl.uniform3fv(u('uTint'), c.tint || [1, 1, 1]); gl.uniform1i(u('uFx'), c.fx || 0);
+  let bg = BGS[sel.bg] || 0; if (bg === 5 && !hasBg) bg = 0;
+  gl.uniform1i(u('uBg'), bg); gl.uniform1f(u('uHasMask'), mask.has ? 1 : 0); gl.uniform1f(u('uInv'), D.inv ? 1 : 0); gl.uniform1f(u('uBgAsp'), bgAsp); gl.uniform1f(u('uShowMask'), D.on && D.mask ? 1 : 0);
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.depthMask(true); gl.colorMask(true, true, true, true);
+  gl.bindVertexArray(quad); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+  const build = MASKS3D[sel.mask3d], showOcc = D.on && D.occ;
+  if (!build && !showOcc) return;
+  const m = meshP, mu = m.u; gl.useProgram(m.p); gl.uniform3f(mu('uRes'), W, H, Dp);
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+  const draw = pt => { gl.uniformMatrix4fv(mu('uM'), false, pt.m); gl.uniform4fv(mu('uC'), pt.c); gl.uniform1f(mu('uEmis'), pt.emis); gl.uniform1f(mu('uShine'), pt.shine); gl.uniform1f(mu('uGlass'), pt.glass);
+    gl.bindVertexArray(pt.g.vao); gl.drawElements(gl.TRIANGLES, pt.g.count, gl.UNSIGNED_SHORT, 0); };
+  const setFace = f => { gl.uniform3fv(mu('uO'), f.O); gl.uniform3fv(mu('uX'), f.X); gl.uniform3fv(mu('uY'), f.Y); gl.uniform3fv(mu('uZ'), f.Z); gl.uniform1f(mu('uS'), f.s); };
+  const occ = OCCLUDER(), glass = [];
+  gl.colorMask(false, false, false, false); for (const f of faces){ setFace(f); draw(occ); } gl.colorMask(true, true, true, true);
+  if (build) for (const f of faces){ setFace(f); for (const pt of build(f, time)) if (pt.c[3] < 1) glass.push([f, pt]); else draw(pt); }
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+  for (const [f, pt] of glass){ setFace(f); draw(pt); }
+  if (showOcc){ gl.disable(gl.DEPTH_TEST); for (const f of faces){ setFace(f); draw(occ); } }
+  gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+/* ================= 2D stickers ================= */
+/* Draw in head units at a face point: u runs toward the screen-right cheek, v runs toward the chin. */
+function at(ctx, f, A){ ctx.setTransform(f.s * f.X[0], f.s * f.X[1], -f.s * f.Y[0], -f.s * f.Y[1], A[0], A[1]); }
+function heart(ctx, x, y, r){ ctx.beginPath(); ctx.moveTo(x, y + r * .9); ctx.bezierCurveTo(x - r * 1.5, y - r * .1, x - r * .7, y - r * 1.1, x, y - r * .35); ctx.bezierCurveTo(x + r * .7, y - r * 1.1, x + r * 1.5, y - r * .1, x, y + r * .9); ctx.closePath(); }
+function star(ctx, x, y, r, n = 4){ ctx.beginPath(); for (let i = 0; i < n * 2; i++){ const a = i * Math.PI / n, q = i % 2 ? r * .38 : r; ctx.lineTo(x + Math.sin(a) * q, y - Math.cos(a) * q); } ctx.closePath(); }
+const sideOf = (f, i) => f.L(i)[0] >= 0 ? 1 : -1;
+const STICKERS = {
+  pup(c, f){
+    for (const i of [54, 284]){ const sx = sideOf(f, i); at(c, f, f.P(i)); c.fillStyle = '#7a4a2b'; c.beginPath(); c.ellipse(sx * .1, -.02, .14, .27, sx * .55, 0, 7); c.fill();
+      c.fillStyle = '#5c3520'; c.beginPath(); c.ellipse(sx * .12, .02, .08, .19, sx * .55, 0, 7); c.fill(); }
+    const open = f.bs.jawOpen || 0;
+    if (open > .25){ at(c, f, f.P(14)); const l = .1 + open * .22; c.fillStyle = '#ff6f91'; c.beginPath(); c.moveTo(-.075, 0); c.lineTo(.075, 0); c.lineTo(.075, l - .07); c.arc(0, l - .07, .075, 0, Math.PI); c.closePath(); c.fill();
+      c.strokeStyle = '#d94f74'; c.lineWidth = .012; c.beginPath(); c.moveTo(0, .01); c.lineTo(0, l - .05); c.stroke(); }
+    at(c, f, f.P(1)); c.fillStyle = '#231815'; c.beginPath(); c.ellipse(0, 0, .1, .072, 0, 0, 7); c.fill(); c.fillStyle = 'rgba(255,255,255,.55)'; c.beginPath(); c.ellipse(-.03, -.028, .028, .016, -.4, 0, 7); c.fill();
+  },
+  cat(c, f){
+    for (const i of [54, 284]){ const sx = sideOf(f, i); at(c, f, f.P(i)); c.fillStyle = '#3b3440'; c.beginPath(); c.moveTo(sx * -.1, .04); c.lineTo(sx * .1, -.34); c.lineTo(sx * .2, .1); c.closePath(); c.fill();
+      c.fillStyle = '#ff9fbe'; c.beginPath(); c.moveTo(sx * -.02, .02); c.lineTo(sx * .09, -.22); c.lineTo(sx * .15, .06); c.closePath(); c.fill(); }
+    at(c, f, f.P(1)); c.fillStyle = '#ff7fa8'; c.beginPath(); c.moveTo(-.06, -.03); c.lineTo(.06, -.03); c.lineTo(0, .05); c.closePath(); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.9)'; c.lineWidth = .009; c.lineCap = 'round';
+    for (const sx of [-1, 1]) for (const k of [-1, 0, 1]){ c.beginPath(); c.moveTo(sx * .13, .05 + k * .02); c.lineTo(sx * .46, .03 + k * .09); c.stroke(); }
+  },
+  bunny(c, f){
+    for (const i of [67, 297]){ const sx = sideOf(f, i); at(c, f, f.P(i)); c.fillStyle = '#f7f2ee'; c.beginPath(); c.ellipse(sx * .03, -.3, .095, .34, sx * .12, 0, 7); c.fill();
+      c.fillStyle = '#ffb3c8'; c.beginPath(); c.ellipse(sx * .03, -.28, .045, .25, sx * .12, 0, 7); c.fill(); }
+    at(c, f, f.P(1)); c.fillStyle = '#ff8fb0'; c.beginPath(); c.ellipse(0, 0, .05, .035, 0, 0, 7); c.fill();
+    at(c, f, f.P(13)); c.fillStyle = '#fff'; c.strokeStyle = '#cfc6c0'; c.lineWidth = .006; for (const sx of [-1, 0]){ c.beginPath(); c.roundRect(sx * .05 + .003, -.01, .044, .085, .012); c.fill(); c.stroke(); }
+  },
+  flowers(c, f){
+    const ids = [54, 103, 67, 109, 10, 338, 297, 332, 284], cols = ['#ff4f9a', '#ffd75e', '#ffffff', '#9b7bff', '#ff8a5c'];
+    ids.forEach((i, k) => { at(c, f, f.P(i)); const y = -.07 - (k % 2) * .03, r = k % 2 ? .04 : .05; c.fillStyle = '#3f9d5a'; c.beginPath(); c.ellipse(.05, y + .04, .05, .02, .5, 0, 7); c.fill();
+      c.fillStyle = cols[k % 5]; for (let p = 0; p < 5; p++){ const a = p * 1.2566 + k; c.beginPath(); c.arc(Math.cos(a) * r, y + Math.sin(a) * r, r * .72, 0, 7); c.fill(); }
+      c.fillStyle = k % 5 === 1 ? '#ff8a5c' : '#ffd75e'; c.beginPath(); c.arc(0, y, r * .55, 0, 7); c.fill(); });
+  },
+  gent(c, f){
+    at(c, f, mid(f.P(2), f.P(0))); c.fillStyle = '#2a1c14';
+    for (const sx of [-1, 1]){ c.beginPath(); c.moveTo(0, -.03); c.bezierCurveTo(sx * .1, -.09, sx * .22, -.03, sx * .3, -.1); c.bezierCurveTo(sx * .27, .04, sx * .1, .06, 0, .025); c.closePath(); c.fill(); }
+    const e = f.L(33)[0] > 0 ? f.eyeL : f.eyeR; at(c, f, e); c.strokeStyle = '#e8b93c'; c.lineWidth = .02; c.beginPath(); c.arc(0, 0, .15, 0, 7); c.stroke();
+    c.fillStyle = 'rgba(200,230,255,.16)'; c.fill(); c.lineWidth = .008; c.beginPath(); c.moveTo(.15, 0); c.bezierCurveTo(.3, .2, .22, .5, .3, .75); c.stroke();
+  },
+  rosy(c, f){
+    for (const i of [50, 280]){ at(c, f, f.P(i)); const g = c.createRadialGradient(0, 0, 0, 0, 0, .15); g.addColorStop(0, 'rgba(255,90,140,.6)'); g.addColorStop(1, 'rgba(255,90,140,0)'); c.fillStyle = g; c.beginPath(); c.arc(0, 0, .15, 0, 7); c.fill();
+      c.fillStyle = 'rgba(120,60,40,.55)'; for (const [x, y] of [[-.05, -.03], [.01, -.05], [.06, -.02], [-.01, 0]]){ c.beginPath(); c.arc(x, y, .009, 0, 7); c.fill(); } }
+    for (const i of [33, 263]){ const sx = sideOf(f, i); at(c, f, f.P(i)); c.fillStyle = '#fff6c9'; star(c, sx * .1, -.04, .055 + Math.sin(time * 5 + sx) * .012); c.fill(); star(c, sx * .17, .05, .03); c.fill(); }
+  },
+  hearts(c, f){
+    for (const e of [f.eyeL, f.eyeR]){ at(c, f, e); const r = .12 + Math.sin(time * 6) * .012; c.fillStyle = '#ff2f6d'; heart(c, 0, 0, r); c.fill(); c.fillStyle = 'rgba(255,255,255,.55)'; c.beginPath(); c.ellipse(-r * .4, -r * .3, r * .16, r * .1, -.6, 0, 7); c.fill(); }
+  }
+};
+
+/* ================= Triggers and particles ================= */
+const parts = [], trig = [];
+const TRIGGERS = { bubbles:'Open mouth: bubbles', confetti:'Raise brows: confetti', sparkle:'Wink: sparkles', kiss:'Pucker: hearts' };
+function spawn(o){ if (parts.length < 500) parts.push(Object.assign({ vx:0, vy:0, g:0, life:1, age:0, rot:0, vr:0, hue:0, drag:.99 }, o)); }
+function runTriggers(dt){
+  const k = 1.5 - D.sens, on = n => sel.triggers.includes(n);
+  faces.forEach((f, i) => {
+    const st = trig[i] || (trig[i] = { brow:false, wink:false, cool:0, acc:0 }), b = f.bs, s = f.s; st.acc += dt;
+    if (on('bubbles') && (b.jawOpen || 0) > .32 * k && st.acc > .05){ st.acc = 0; spawn({ t:'bubble', x:f.mouth[0] + (Math.random() - .5) * s * .15, y:f.mouth[1], vx:(Math.random() - .5) * s * .5 - f.Y[0] * s * .2, vy:-s * (.5 + Math.random() * .6), r:s * (.03 + Math.random() * .06), life:1.6 + Math.random(), hue:170 + Math.random() * 140 }); }
+    const brow = (b.browInnerUp || 0) > .5 * k;
+    if (on('confetti') && brow && !st.brow){ const top = f.P(10); for (let n = 0; n < 60; n++) spawn({ t:'conf', x:top[0], y:top[1] - s * .2, vx:(Math.random() - .5) * s * 3, vy:-s * (1 + Math.random() * 2.2), g:s * 3.2, r:s * (.02 + Math.random() * .025), life:1.8 + Math.random(), hue:Math.random() * 360, rot:Math.random() * 6, vr:(Math.random() - .5) * 14 }); }
+    st.brow = brow;
+    const bl = b.eyeBlinkLeft || 0, br = b.eyeBlinkRight || 0, wink = Math.abs(bl - br) > .35 * k && Math.max(bl, br) > .5 * k;
+    if (on('sparkle') && wink && !st.wink){ /* blendshape "Left" is the subject's own left eye (points 263/362) */
+      const eye = bl > br ? f.eyeR : f.eyeL; for (let n = 0; n < 16; n++){ const a = Math.random() * 6.28, v = s * (.3 + Math.random() * 1.1); spawn({ t:'star', x:eye[0], y:eye[1], vx:Math.cos(a) * v, vy:Math.sin(a) * v, r:s * (.03 + Math.random() * .05), life:.7 + Math.random() * .5, hue:45 + Math.random() * 20, rot:Math.random() * 3, vr:4, drag:.95 }); } }
+    st.wink = wink; st.cool -= dt;
+    if (on('kiss') && (b.mouthPucker || 0) > .6 * k && st.cool <= 0){ st.cool = .16; spawn({ t:'heart', x:f.mouth[0] + (Math.random() - .5) * s * .2, y:f.mouth[1], vx:(Math.random() - .5) * s * .6, vy:-s * (.5 + Math.random() * .5), r:s * (.05 + Math.random() * .05), life:1.5 + Math.random() * .6, hue:330 + Math.random() * 30 }); }
+  });
+}
+function drawParts(c, dt){
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  for (let i = parts.length - 1; i >= 0; i--){
+    const p = parts[i]; p.age += dt; if (p.age > p.life){ parts.splice(i, 1); continue; }
+    p.vy += p.g * dt; p.vx *= p.drag; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt;
+    const a = clamp((p.life - p.age) / .4, 0, 1); c.globalAlpha = a;
+    if (p.t === 'bubble'){ const x = p.x + Math.sin(p.age * 5 + p.hue) * p.r * .6; c.strokeStyle = `hsla(${p.hue},90%,80%,.95)`; c.lineWidth = Math.max(1.5, p.r * .12); c.fillStyle = `hsla(${p.hue},90%,75%,.22)`; c.beginPath(); c.arc(x, p.y, p.r, 0, 7); c.fill(); c.stroke();
+      c.fillStyle = 'rgba(255,255,255,.8)'; c.beginPath(); c.arc(x - p.r * .35, p.y - p.r * .35, p.r * .16, 0, 7); c.fill(); }
+    else if (p.t === 'conf'){ c.save(); c.translate(p.x, p.y); c.rotate(p.rot); c.fillStyle = `hsl(${p.hue},90%,62%)`; c.fillRect(-p.r, -p.r * .5 * Math.cos(p.rot * 1.7), p.r * 2, p.r * Math.cos(p.rot * 1.7)); c.restore(); }
+    else if (p.t === 'star'){ c.save(); c.translate(p.x, p.y); c.rotate(p.rot); c.fillStyle = `hsl(${p.hue},100%,78%)`; star(c, 0, 0, p.r); c.fill(); c.restore(); }
+    else { c.fillStyle = `hsl(${p.hue},95%,62%)`; heart(c, p.x + Math.sin(p.age * 4 + p.hue) * p.r * .4, p.y, p.r * (1 + p.age * .25)); c.fill(); }
+  }
+  c.globalAlpha = 1;
+}
+
+/* ================= Main loop ================= */
+let prevT = performance.now();
+function frame(now){
+  requestAnimationFrame(frame);
+  const dt = Math.min(.1, (now - prevT) / 1000); prevT = now; time += dt;
+  if (D.test){ src.el = testC; src.w = testC.width; src.h = testC.height; src.mirror = false; }
+  else if (src.kind === 'cam'){ if (cam.readyState < 2 || !cam.videoWidth) return; src.el = cam; src.w = cam.videoWidth; src.h = cam.videoHeight; src.mirror = facing === 'user'; }
+  else if (src.kind !== 'photo') return;
+  if (out.width !== src.w || out.height !== src.h){ out.width = dbg.width = src.w; out.height = dbg.height = src.h; }
+  faces = detect(now); segment(now);
+  try { renderGL(); } catch (e) { if (!frame.err){ frame.err = 1; log('render error: ' + e.message); } }
+  octx.setTransform(1, 0, 0, 1, 0, 0); octx.drawImage(glc, 0, 0);
+  const st = STICKERS[sel.sticker];
+  if (st) for (const f of faces){ try { st(octx, f); } catch (e) { if (!frame.serr){ frame.serr = 1; log('sticker error: ' + e.message); } } }
+  runTriggers(dt); drawParts(octx, dt);
+  perf.frames++; if (now - perf.last > 500){ perf.fps = perf.frames * 1000 / (now - perf.last); perf.frames = 0; perf.last = now; if (D.on) stats(); }
+  if (D.on) drawDebug();
+}
+function drawDebug(){
+  const c = dctx; c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, dbg.width, dbg.height);
+  for (const f of faces){
+    if (D.lm){ c.fillStyle = 'rgba(98,232,207,.9)'; const r = Math.max(1, f.s / 220); for (let i = 0; i < f.lm.length; i++){ const p = f.P(i); c.fillRect(p[0] - r, p[1] - r, r * 2, r * 2); } }
+    if (D.ax){ const L = f.s * .6; [[f.X, '#ff4f9a'], [f.Y, '#62e8cf'], [f.Z, '#ffd75e']].forEach(([v, col]) => { c.strokeStyle = col; c.lineWidth = Math.max(2, f.s / 90); c.beginPath(); c.moveTo(f.O[0], f.O[1]); c.lineTo(f.O[0] + v[0] * L, f.O[1] + v[1] * L); c.stroke(); }); }
+  }
+}
+function stats(){
+  const f = faces[0], d = v => (v * 57.3).toFixed(0).padStart(4), n = v => (v || 0).toFixed(2);
+  let t = `fps ${perf.fps.toFixed(0)}   source ${D.test ? 'test face' : src.kind} ${src.w}x${src.h}${src.mirror ? ' mirrored' : ''}\n` +
+    `face ${perf.faceMs.toFixed(1)}ms (${perf.delegate})   mask ${perf.segMs.toFixed(1)}ms (${perf.segDelegate})${mask.has ? ' ' + mask.w + 'x' + mask.h : ' off'}\n` +
+    `faces ${faces.length}   particles ${parts.length}\n`;
+  if (f) t += `yaw${d(f.yaw)} pitch${d(f.pitch)} roll${d(f.roll)}  width ${f.s.toFixed(0)}px\njaw ${n(f.bs.jawOpen)} brow ${n(f.bs.browInnerUp)} blinkL ${n(f.bs.eyeBlinkLeft)} blinkR ${n(f.bs.eyeBlinkRight)} pucker ${n(f.bs.mouthPucker)}\n`;
+  t += `on: ${['sticker', 'warp', 'mask3d', 'colour', 'bg'].map(k => sel[k]).filter(v => v !== 'none').concat(sel.triggers).join(', ') || 'nothing'}`;
+  $('stats').textContent = t;
+}
+
+/* ================= Sources ================= */
+async function startCam(){
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ $('startNote').textContent = 'This page cannot reach the camera here. Open it over https (or on localhost), or use a photo.'; log('getUserMedia unavailable (insecure context?)'); return false; }
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:facing, width:{ideal:1280}, height:{ideal:720} }, audio:false });
+    cam.srcObject = stream; await cam.play();
+    src.kind = 'cam'; $('start').hidden = true; $('tray').hidden = false; log('camera on: ' + (stream.getVideoTracks()[0].label || facing));
+    return true;
+  } catch (e) {
+    log('camera error: ' + e.name + ' ' + e.message);
+    $('startNote').textContent = e.name === 'NotAllowedError' ? 'Camera access was blocked. Allow it in your browser’s site settings, or use a photo.' : 'No camera could be opened (' + e.name + '). You can use a photo instead.';
+    $('start').hidden = false; return false;
+  }
+}
+function fileToCanvas(file, max){ return new Promise((res, rej) => { const img = new Image(); img.onload = () => { const k = Math.min(1, max / Math.max(img.width, img.height)), c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k); c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(img.src); res(c); }; img.onerror = () => rej(new Error('That file is not an image this browser can open')); img.src = URL.createObjectURL(file); }); }
+async function usePhoto(file){
+  if (!file) return;
+  try { const c = await fileToCanvas(file, 1280); if (stream){ stream.getTracks().forEach(t => t.stop()); stream = null; }
+    src.kind = 'photo'; src.el = c; src.w = c.width; src.h = c.height; src.mirror = false; $('start').hidden = true; $('tray').hidden = false; $('hint').textContent = 'Photo mode · tap the arrows to go back to the camera'; log('photo source ' + c.width + 'x' + c.height);
+  } catch (e) { toast(e.message); }
+}
+$('startCam').onclick = startCam;
+$('photoIn').onchange = e => { usePhoto(e.target.files[0]); e.target.value = ''; };
+$('photoIn2').onchange = e => { usePhoto(e.target.files[0]); e.target.value = ''; };
+$('flip').onclick = async () => { if (src.kind === 'cam') facing = facing === 'user' ? 'environment' : 'user'; D.test = false; $('dTest').checked = false; if (await startCam()) $('hint').textContent = 'Tap for a photo · hold for video'; };
+$('bgIn').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; try { const c = await fileToCanvas(f, 1600); gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, texB); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c); bgAsp = c.width / c.height; hasBg = true; pick('bg', 'photo', true); } catch (err) { toast(err.message); } };
+
+/* ================= Capture ================= */
+let shot = null, rec = null, recT = 0, recTimer = 0, holdT = 0, micTried = false, mic = null;
+const stamp = () => { const d = new Date(), z = n => String(n).padStart(2, '0'); return `gurn-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`; };
+function showShot(blob, ext){
+  if (shot) URL.revokeObjectURL(shot.url);
+  shot = { blob, url:URL.createObjectURL(blob), name:stamp() + '.' + ext };
+  const isV = blob.type.startsWith('video'); $('shotImg').hidden = isV; $('shotVid').hidden = !isV;
+  if (isV){ $('shotVid').src = shot.url; $('shotVid').play().catch(() => {}); } else $('shotImg').src = shot.url;
+  let can = false; try { can = !!navigator.canShare && navigator.canShare({ files:[new File([blob], shot.name, {type:blob.type})] }); } catch (e) {}
+  $('share').hidden = !can; $('sheet').hidden = false;
+}
+function takePhoto(){ out.toBlob(b => b ? showShot(b, 'jpg') : toast('Could not capture the photo'), 'image/jpeg', .92); }
+async function startRec(){
+  if (!window.MediaRecorder || !out.captureStream){ toast('This browser cannot record video. Photos still work.'); return; }
+  const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t));
+  if (!type){ toast('This browser cannot record video. Photos still work.'); return; }
+  const s = out.captureStream(30);
+  if (!micTried && navigator.mediaDevices && src.kind === 'cam' && !D.test){ micTried = true; try { mic = await navigator.mediaDevices.getUserMedia({audio:true}); } catch (e) { log('no microphone, recording without sound: ' + e.name); } }
+  if (mic) mic.getAudioTracks().forEach(t => s.addTrack(t));
+  const chunks = []; rec = new MediaRecorder(s, { mimeType:type, videoBitsPerSecond:5e6 });
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => { clearInterval(recTimer); $('shutter').classList.remove('rec'); $('hint').textContent = 'Tap for a photo · hold for video'; const b = new Blob(chunks, {type:type.split(';')[0]}); rec = null; if (b.size) showShot(b, type.includes('mp4') ? 'mp4' : 'webm'); else toast('Nothing was recorded'); };
+  rec.onerror = e => log('recorder error: ' + (e.error && e.error.message));
+  rec.start(250); recT = performance.now(); $('shutter').classList.add('rec');
+  recTimer = setInterval(() => { const t = (performance.now() - recT) / 1000; $('hint').innerHTML = 'Recording <b>' + t.toFixed(1) + 's</b> · let go to stop'; if (t > 60) stopRec(); }, 100);
+  if (pendingStop){ pendingStop = false; setTimeout(stopRec, 600); }
+}
+let pendingStop = false, starting = false;
+function stopRec(){ if (rec && rec.state !== 'inactive') rec.stop(); }
+const sh = $('shutter');
+sh.addEventListener('pointerdown', e => { e.preventDefault(); try { sh.setPointerCapture(e.pointerId); } catch (x) {} pendingStop = false; holdT = setTimeout(async () => { holdT = 0; starting = true; await startRec(); starting = false; }, 350); });
+const release = () => { if (holdT){ clearTimeout(holdT); holdT = 0; takePhoto(); } else if (starting) pendingStop = true; else stopRec(); };
+sh.addEventListener('pointerup', release); sh.addEventListener('pointercancel', () => { if (holdT){ clearTimeout(holdT); holdT = 0; } else stopRec(); });
+sh.addEventListener('contextmenu', e => e.preventDefault());
+$('save').onclick = () => { if (!shot) return; const a = document.createElement('a'); a.href = shot.url; a.download = shot.name; document.body.appendChild(a); a.click(); a.remove(); toast('Saved as ' + shot.name); };
+$('share').onclick = async () => { try { await navigator.share({ files:[new File([shot.blob], shot.name, {type:shot.blob.type})] }); } catch (e) { if (e.name !== 'AbortError') toast('Sharing did not work here. Use Save instead.'); } };
+$('discard').onclick = () => { $('sheet').hidden = true; $('shotVid').pause(); $('shotVid').removeAttribute('src'); };
+
+/* ================= Filter picker ================= */
+const MENU = [
+  ['sticker', 'Stickers', [['none', 'None'], ['pup', 'Pup'], ['cat', 'Cat'], ['bunny', 'Bunny'], ['flowers', 'Flower crown'], ['hearts', 'Heart eyes'], ['gent', 'Gent'], ['rosy', 'Rosy']]],
+  ['warp', 'Warps', [['none', 'None'], ['bugeyes', 'Bug eyes'], ['tinymouth', 'Tiny mouth'], ['bigmouth', 'Big mouth'], ['bignose', 'Big nose'], ['chipmunk', 'Chipmunk'], ['balloon', 'Balloon'], ['pinhead', 'Pinhead'], ['alien', 'Alien']]],
+  ['mask3d', '3D', [['none', 'None'], ['shades', 'Shades'], ['crown', 'Crown'], ['halo', 'Halo'], ['orbit', 'Orbit'], ['party', 'Party hat'], ['horns', 'Horns'], ['helmet', 'Space helmet']]],
+  ['colour', 'Colour', [['none', 'None'], ['glow', 'Glow'], ['porcelain', 'Porcelain'], ['vintage', 'Vintage'], ['noir', 'Noir'], ['teal', 'Teal & peach'], ['pop', 'Pop'], ['heat', 'Heat map']]],
+  ['bg', 'Backdrop', [['none', 'None'], ['blur', 'Blur'], ['spot', 'Spotlight'], ['sunset', 'Sunset'], ['stars', 'Night sky'], ['photo', 'Your photo…']]],
+  ['triggers', 'Triggers', Object.entries(TRIGGERS)]
+];
+let tab = store.get('tab', 'sticker');
+function pick(cat, id, force){
+  if (cat === 'triggers'){ const i = sel.triggers.indexOf(id); if (i < 0) sel.triggers.push(id); else sel.triggers.splice(i, 1); }
+  else if (cat === 'bg' && id === 'photo' && !force){ $('bgIn').click(); return; }
+  else sel[cat] = id;
+  if (cat === 'bg' && id !== 'none') loadSegmenter();
+  store.set('sel', sel); drawMenu();
+}
+function drawMenu(){
+  const tabs = $('tabs'), chips = $('chips'); tabs.textContent = ''; chips.textContent = '';
+  for (const [cat, label, items] of MENU){
+    const b = document.createElement('button'); b.className = 'tab'; b.setAttribute('role', 'tab'); b.setAttribute('aria-selected', cat === tab); b.textContent = label;
+    if (cat === 'triggers' ? sel.triggers.length : sel[cat] !== 'none'){ const d = document.createElement('span'); d.className = 'dot'; b.appendChild(d); }
+    b.onclick = () => { tab = cat; store.set('tab', tab); drawMenu(); chips.scrollLeft = 0; }; tabs.appendChild(b);
+    if (cat !== tab) continue;
+    for (const [id, name] of items){ const c = document.createElement('button'); c.className = 'chip'; c.textContent = name; c.setAttribute('aria-pressed', cat === 'triggers' ? sel.triggers.includes(id) : sel[cat] === id); c.onclick = () => pick(cat, id); chips.appendChild(c); }
+  }
+}
+
+/* ================= Debug mode ================= */
+function setDebug(on){ D.on = on; $('panel').hidden = !on; $('dbg').hidden = !on; $('debugBtn').setAttribute('aria-pressed', on); store.set('debug', on); if (!on) dctx.clearRect(0, 0, dbg.width, dbg.height); }
+$('debugBtn').onclick = () => setDebug(!D.on);
+for (const [id, key] of [['dLm', 'lm'], ['dAx', 'ax'], ['dOcc', 'occ'], ['dMask', 'mask'], ['dInv', 'inv']]) $(id).onchange = e => { D[key] = e.target.checked; };
+$('dTest').onchange = e => { D.test = e.target.checked; mask.has = false; parts.length = 0; if (D.test){ $('start').hidden = true; $('tray').hidden = false; log('test face on'); } else if (src.kind === 'none'){ $('start').hidden = false; $('tray').hidden = true; } };
+$('dSens').oninput = e => { D.sens = +e.target.value; };
+window.addEventListener('error', e => log('error: ' + e.message)); window.addEventListener('unhandledrejection', e => log('error: ' + (e.reason && e.reason.message || e.reason)));
+window.gurn = { sel, D, pick, perf, get faces(){ return faces; } };
+
+/* ================= Boot ================= */
+if (sel.bg === 'photo') sel.bg = 'none';
+try { initGL(); } catch (e) { setStatus('This browser cannot run the filters', true); log(e.message); }
+drawMenu();
+setDebug(location.hash === '#debug' || store.get('debug', false));
+if (!window.isSecureContext) $('startNote').textContent = 'The camera needs https or localhost. On this address only photo mode will work.';
+loadTracker();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
